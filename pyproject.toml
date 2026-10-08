@@ -109,7 +109,12 @@ dev = [
     "pytest-cov>=4.1",
     "ruff>=0.5",
     "mypy>=1.11,<2; python_version >= '3.11'",
-    "pandas-stubs>=2.2; python_version >= '3.11'",
+    # Capped at the last release this tree type-checks clean against. The
+    # next one (3.0.5.260914, published after 0.7.0) reports four errors in
+    # stress.py, optimizers/_clustering.py and analytics/diversification.py,
+    # and the typecheck job installs this extra unpinned, so it would turn
+    # main red with no change to the code. Lift the cap when those are fixed.
+    "pandas-stubs>=2.2,<=3.0.5.260730; python_version >= '3.11'",
     "types-PyYAML>=6.0; python_version >= '3.11'",
 ]
 
