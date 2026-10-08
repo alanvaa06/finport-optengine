@@ -232,12 +232,19 @@ def convert_prices_to_base(
 
     fx_rates = fx_rates.copy()
     fx_rates.index = pd.to_datetime(fx_rates.index)
-    aligned = fx_rates.reindex(prices.index)
+    fx_rates = fx_rates.sort_index()
+    # Fill over both calendars, then read the price dates: an as-of join.
+    # Reindexing onto the price dates first discards every rate that falls
+    # between two of them, so a month-end on a weekend took the previous
+    # month-end's rate instead of that Friday's.
+    both = fx_rates.reindex(fx_rates.index.union(prices.index))
     if fill == "ffill":
-        aligned = aligned.ffill().bfill(limit=MAX_LEADING_FX_GAP)
+        aligned = both.ffill().reindex(prices.index).bfill(limit=MAX_LEADING_FX_GAP)
     elif fill == "bfill":
-        aligned = aligned.bfill()
-    elif fill is not None:
+        aligned = both.bfill().reindex(prices.index)
+    elif fill is None:
+        aligned = both.reindex(prices.index)
+    else:
         raise ValueError(f"fill must be 'ffill', 'bfill' or None; got {fill!r}.")
 
     out = prices.copy()
