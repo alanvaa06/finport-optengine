@@ -664,6 +664,63 @@ def test_no_lookahead_in_delisting():
     )[: len(left)]
 
 
+def test_delisting_cannot_see_the_bar_its_decision_is_held_over():
+    """A halt on the decision bar is news the decision did not have.
+
+    The book chosen at ``t`` is held over ``t`` and its solve window ends on
+    ``t - 1``. Measuring silence through ``t`` let ``delisting_grace=0`` sell
+    X at its last mark on the very bar it halted, and so dodge the -50% it
+    reopened at -- a sale nobody at the close of ``t - 1`` could have placed.
+    """
+    returns = pd.DataFrame(
+        {"X": 0.001, "Y": 0.001}, index=_dates(40), dtype=float
+    )
+    halt = 20
+    returns.iloc[halt, 0] = np.nan
+    returns.iloc[halt + 1, 0] = -0.50
+
+    def hold_x(window: pd.DataFrame) -> pd.Series:
+        return pd.Series({"X": 1.0, "Y": 0.0}).reindex(window.columns).fillna(0.0)
+
+    kwargs = dict(
+        lookback=10,
+        rebalance_every=10,
+        spec=BacktestSpec(frequency="none", costs=CostSpec(commission_bps=0.0)),
+    )
+    honest = walk_forward_run(returns, hold_x, **kwargs)
+    graced = walk_forward_run(returns, hold_x, delisting_grace=0, **kwargs)
+
+    assert returns.index[halt] in graced.weights_history.index
+    assert graced.metadata["delistings"] == {}
+    assert float(graced.run.weights.loc[returns.index[halt + 1], "X"]) == pytest.approx(1.0)
+    pd.testing.assert_series_equal(graced.returns, honest.returns)
+
+
+def test_a_first_print_on_the_decision_bar_waits_for_the_next_decision():
+    """The listing side of the same rule: a print on ``t`` is unknown at ``t``."""
+    returns = _flat_returns(30, ["A", "B"])
+    first_print = 10
+    returns.loc[returns.index[:first_print], "B"] = np.nan
+    seen: list[list[str]] = []
+
+    def solve(window: pd.DataFrame) -> pd.Series:
+        seen.append(list(window.columns))
+        return pd.Series(1.0 / window.shape[1], index=window.columns)
+
+    walk_forward_run(
+        returns,
+        solve,
+        lookback=5,
+        rebalance_every=5,
+        spec=BacktestSpec(frequency="none", costs=CostSpec(commission_bps=0.0)),
+        delisting_grace=0,
+    )
+    # Decisions on rows 5, 10, 15, ...: B prints first on row 10, so the
+    # decision held over row 10 cannot know it, and the next one can.
+    assert seen[1] == ["A"]
+    assert seen[2] == ["A", "B"]
+
+
 def test_failed_solve_liquidates_the_carried_book_of_ineligible_names():
     """A solve that fails is not a licence to keep a name that left the universe."""
     assets = ["A", "B"]

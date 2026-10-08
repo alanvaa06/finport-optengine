@@ -57,10 +57,11 @@ rescaling the rest. ``notes["n_ineligible_carried_forward"]`` counts it.
 stopped printing looks exactly like one on a long holiday until enough silence
 has passed, and only the caller knows how much is enough — so
 ``delisting_grace`` has no default and delisting is simply not diagnosed
-without one. When it is set, staleness is measured on ``returns`` up to **and
-including** the decision date and never past it, and the verdict is sticky: a
-name declared delisted stays out for the rest of the run rather than
-resurrecting on a late print.
+without one. When it is set, staleness is measured on ``returns`` strictly
+**before** the decision date — the rows the solve window ends on — because the
+book chosen on that date is held over it, and a halt on that very bar is news
+the decision did not have. The verdict is sticky: a name declared delisted
+stays out for the rest of the run rather than resurrecting on a late print.
 """
 
 from __future__ import annotations
@@ -273,18 +274,20 @@ def walk_forward_run(
             given; there is no default.
         delisting_grace: How many bars of silence make a name delisted, or
             ``None`` (the default) to not diagnose delisting at all. With
-            ``0``, a name that did not print on the decision date is gone;
-            with ``5``, a business week of silence is tolerated first.
-            Staleness is measured on ``returns`` up to and including the
-            decision date, never past it. A delisted name is dropped from the
+            ``0``, a name that did not print on the bar before the decision
+            is gone; with ``5``, a business week of silence is tolerated
+            first. Staleness is measured on ``returns`` strictly before the
+            decision date, like the solve window: the decision's book is held
+            over the decision date, so that bar's print — or its absence —
+            is not yet known. A delisted name is dropped from the
             solve window and its target forced to zero, which the replay
             executes as a sale at its last mark — see
             :func:`~optimization_engine.backtest.runner.run_backtest`. The
             verdict is sticky, and ``notes["delistings"]`` records the last
             print and the decision that liquidated it. A name that has not
-            printed *at all* by a decision is likewise not investable at it,
-            but it is not a delisting and not sticky: it enters on its first
-            print.
+            printed *at all* before a decision is likewise not investable at
+            it, but it is not a delisting and not sticky: it enters on the
+            first decision after its first print.
 
     Returns:
         The bundle. ``n_resolves`` counts optimizations, ``n_trade_dates``
@@ -347,9 +350,14 @@ def walk_forward_run(
         if universe_mask is not None:
             investable &= universe_mask[position]
         if last_seen is not None:
-            seen = last_seen[position]
+            # The book chosen here is held over ``position`` itself, so what
+            # the decision can know ends on the bar before — the same row the
+            # solve window ends on. Reading ``position`` would let a halt on
+            # this very bar sell the name at its last mark before anyone
+            # could have known it halted.
+            seen = last_seen[position - 1]
             never_printed = seen < 0
-            stale = (~never_printed) & ((position - seen) > grace)
+            stale = (~never_printed) & ((position - 1 - seen) > grace)
             for column_position in np.flatnonzero(stale & ~delisted_ever):
                 delistings[str(returns.columns[column_position])] = {
                     "last_print": pd.Timestamp(
