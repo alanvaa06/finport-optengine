@@ -270,7 +270,9 @@ class EngineConfig:
             has gross exposure of exactly 1.
         previous_weights: The portfolio being traded from. Needed for the
             turnover budget and for turnover reporting.
-        turnover_limit: Cap on ``Σ|w_i − w_prev,i|``. Honoured by the
+        turnover_limit: Cap on ``Σ|w_i − w_prev,i|``, summed over both books:
+            a previous holding the universe no longer contains is sold in
+            full and counts against the budget. Honoured by the
             mean-variance family and mean-CVaR; the homogeneous solves
             (max-Sharpe, max-diversification, risk parity) warn instead.
         strict_mandate: Refuse a book that breaches the mandate instead of
