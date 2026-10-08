@@ -112,6 +112,65 @@ def test_denoising_improves_conditioning_and_keeps_a_correlation():
     assert 1 <= report.n_signal_eigenvalues < corr.shape[0]
 
 
+def test_a_spectrum_with_no_signal_reports_zero_factors_and_the_one_kept():
+    """The fit's count and the filter's floor are two different numbers.
+
+    The filter always keeps the leading eigenvalue — treating the whole matrix
+    as noise would erase it — but on a pure-noise panel the fit finds nothing
+    above the edge, and the report used to say it had found one.
+    """
+    rng = np.random.default_rng(11)
+    noise = pd.DataFrame(rng.normal(size=(1000, 50)) * 0.01)
+    cov = noise.cov()
+    eigenvalues = np.linalg.eigvalsh(cov_to_corr(cov.values)[0])
+    _, cutoff = fit_marchenko_pastur(eigenvalues, q=1000 / 50)
+    assert (eigenvalues > cutoff).sum() == 0
+
+    _, report = denoise_covariance(cov, n_observations=1000)
+
+    assert report.n_signal_eigenvalues == 0
+    assert report.n_factors_kept == 1
+    assert "kept anyway" in report.describe()
+
+
+def test_a_marchenko_pastur_fit_that_fails_is_flagged_not_silently_replaced(
+    monkeypatch,
+):
+    """σ² = 1 is the pure-noise edge, and it moves the answer.
+
+    When the optimizer behind the fit reports failure the variance falls back
+    to 1.0. On a panel with weak factors that pushed λ₊ from 1.553 to 1.732
+    and the signal count from 4 to 2, and the minimum-variance book moved by
+    0.13 in L1 — with nothing in the report to say the fit had not run.
+    """
+    import types
+
+    import scipy.optimize
+
+    real = scipy.optimize.minimize_scalar
+
+    def unconverged(*args, **kwargs):
+        found = real(*args, **kwargs)
+        return types.SimpleNamespace(x=found.x, success=False)
+
+    monkeypatch.setattr(scipy.optimize, "minimize_scalar", unconverged)
+    corr, _ = _factor_correlation(n_assets=40, n_obs=400, n_factors=3, seed=9)
+
+    with pytest.warns(UserWarning, match="Marchenko-Pastur fit"):
+        _, report = denoise_correlation(corr.values, q=10.0)
+
+    assert report.noise_fit_failed
+    assert report.noise_variance == 1.0
+    assert "did not converge" in report.describe()
+
+
+def test_a_fit_that_converges_carries_no_failure_flag():
+    corr, _ = _factor_correlation(n_assets=40, n_obs=400, n_factors=3, seed=9)
+    _, report = denoise_correlation(corr.values, q=10.0)
+    assert not report.noise_fit_failed
+    assert report.n_factors_kept == report.n_signal_eigenvalues
+
+
 def test_denoising_preserves_the_trace_of_the_correlation():
     """Constant-residual denoising redistributes eigenvalues, it does not add.
 

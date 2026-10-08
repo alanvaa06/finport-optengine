@@ -436,6 +436,27 @@ def test_file_lists_what_it_does_contain_when_nothing_matches(tmp_path):
         )
 
 
+def test_a_file_does_not_claim_the_currency_it_was_asked_to_convert_into(tmp_path):
+    """A file says nothing about its currency, so the panel must not either.
+
+    Every series used to be tagged with the *target* currency, which made
+    the conversion step see nothing to convert: a peso series asked for in
+    dollars came back unconverted, labelled USD, with no warning.
+    """
+    from optimization_engine.ingest import ingest
+
+    index = pd.bdate_range("2024-01-01", periods=6)
+    pd.DataFrame({"WALMEX": np.linspace(60, 61, 6)}, index=index).to_csv(
+        tmp_path / "mx.csv", index_label="date"
+    )
+    request = _request(("WALMEX",), provider="file", end="2024-01-31", currency="USD")
+
+    result = ingest(request, path=str(tmp_path / "mx.csv"), use_cache=False)
+
+    assert result.panel.meta["WALMEX"].currency is None
+    assert any("do not say what currency" in note for note in result.warnings)
+
+
 def test_file_without_a_path_says_so():
     with pytest.raises(ProviderConfigurationError, match="needs a path"):
         LocalFile().fetch_batch(("AAA",), _request(("AAA",)))

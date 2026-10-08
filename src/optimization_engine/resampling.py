@@ -196,8 +196,16 @@ def bootstrap_frontier(
         quantiles: Quantiles of the return distribution to report.
         seed: Base seed, for reproducibility.
         reestimate_expected_returns: Re-estimate μ on each draw. Set False to
-            hold the configured expected returns fixed and isolate covariance
-            uncertainty.
+            hold the expected returns fixed — the config's, or one estimate
+            from the observed sample when it has none — and isolate
+            covariance uncertainty.
+
+    The point estimate is traced with the same μ the draws use, so the curve
+    sits inside the band it is drawn against: re-estimated from the observed
+    sample by the configured estimator when the draws re-estimate, the fixed
+    vector when they do not. It used to take ``config.expected_returns``
+    either way, so a config carrying capital-market assumptions drew its
+    centre on those and its band on history.
 
     Raises:
         ValueError: If every draw fails, or ``n_draws`` is below 2.
@@ -207,12 +215,24 @@ def bootstrap_frontier(
 
     import copy
 
+    from optimization_engine.engine import resolve_expected_returns
+
+    # The estimator the draws use. With re-estimation on, the config's own
+    # vector is set aside so ``resolve_expected_returns`` falls through to
+    # the configured history estimator — on the observed sample for the
+    # centre, on each drawn sample for the band.
+    estimator = config
+    if reestimate_expected_returns:
+        estimator = copy.deepcopy(config)
+        estimator.expected_returns = {}
+    observed_cov = covariance_from_config(returns, config)
+    centre_mu = resolve_expected_returns(estimator, returns, observed_cov)
+    centre_config = copy.deepcopy(config)
+    centre_config.expected_returns = centre_mu.to_dict()
     point_estimate = efficient_frontier(
-        config,
-        covariance_from_config(returns, config),
-        expected_returns=(
-            pd.Series(config.expected_returns) if config.expected_returns else None
-        ),
+        centre_config,
+        observed_cov,
+        expected_returns=centre_mu,
         returns=returns,
         n_points=n_points,
     )
@@ -229,19 +249,10 @@ def bootstrap_frontier(
             draw_config = copy.deepcopy(config)
             cov = covariance_from_config(sample, config)
             if reestimate_expected_returns:
-                mu = expected_returns_from_history(
-                    sample,
-                    method=expected_return_method_for_estimator(
-                        config.expected_returns_method
-                    ),
-                    periods_per_year=config.periods_per_year,
-                    span=config.ema_span,
-                    risk_free_rate=config.optimizer.risk_free_rate,
-                    cov_matrix=cov,
-                )
-                draw_config.expected_returns = mu.to_dict()
+                mu = resolve_expected_returns(estimator, sample, cov)
             else:
-                mu = pd.Series(config.expected_returns)
+                mu = centre_mu
+            draw_config.expected_returns = mu.to_dict()
 
             frontier = efficient_frontier(
                 draw_config, cov, expected_returns=mu, returns=sample,
@@ -330,17 +341,24 @@ class ResampledFrontier:
     Attributes:
         weights: An assets × rank frame of averaged weights. Each column
             sums to 1. This is the frame the old bare-frame return gave back.
+            Rank ``rank_i`` is the ``i``-th point of every draw's frontier,
+            averaged over the draws in which that point solved; a rank that
+            solved in fewer than half the usable draws is left out.
         n_draws: Draws that produced a usable frontier and were averaged.
         n_failed: Draws that produced nothing to average — whether they
             raised or merely failed to solve two ranks.
         first_error: The first failure's message, verbatim, or ``None`` when
             every draw solved.
+        rank_counts: For every rank traced, dropped ones included, how many
+            of the ``n_draws`` usable draws it solved in — the number of
+            observations its column rests on.
     """
 
     weights: pd.DataFrame
     n_draws: int
     n_failed: int = 0
     first_error: str | None = None
+    rank_counts: pd.Series = field(default_factory=lambda: pd.Series(dtype=int))
 
     @property
     def failure_rate(self) -> float:
@@ -360,6 +378,22 @@ class ResampledFrontier:
                 f" {self.n_failed} draw(s) produced nothing to average, so the "
                 "result is conditioned on the draws where the mandate solved. "
                 f"First failure: {self.first_error}"
+            )
+        short = self.rank_counts[self.rank_counts < self.n_draws]
+        kept = [r for r in short.index if r in self.weights.columns]
+        dropped = [r for r in short.index if r not in self.weights.columns]
+        if kept:
+            line += (
+                " Averaged over fewer draws, because the rank did not solve in "
+                "every one: "
+                + ", ".join(f"{r} ({int(short[r])})" for r in kept)
+                + "."
+            )
+        if dropped:
+            line += (
+                " Left out, because the rank solved in fewer than half the "
+                "draws: " + ", ".join(f"{r} ({int(short[r])})" for r in dropped)
+                + "."
             )
         return line
 
@@ -399,7 +433,8 @@ def resampled_efficient_frontier(
 
     Returns:
         A :class:`ResampledFrontier`. ``.weights`` is the assets × rank frame
-        of averaged weights, each column summing to 1.
+        of averaged weights, each column summing to 1, and ``.rank_counts``
+        says how many draws each rank rests on.
 
     Raises:
         ValueError: If no draw produces a usable frontier, or if more draws
@@ -447,9 +482,13 @@ def resampled_efficient_frontier(
                         "it on the rank grid."
                     )
                 continue
-            usable = weights.loc[:, ok]
-            usable.columns = range(usable.shape[1])
-            stacks.append(usable)
+            # Keep every rank in its own slot and blank the ones that did
+            # not solve. Renumbering the survivors from zero shifted every
+            # rank above a failure down one place in that draw.
+            ranked = weights.copy()
+            ranked.loc[:, ~ok] = np.nan
+            ranked.columns = range(ranked.shape[1])
+            stacks.append(ranked)
         except Exception as exc:
             n_failed += 1
             if first_error is None:
@@ -470,16 +509,33 @@ def resampled_efficient_frontier(
             f"resample a longer history. First failure: {first_error}"
         )
 
-    # Ranks present in every draw, so each averaged column is built from the
-    # same number of observations.
-    common = min(s.shape[1] for s in stacks)
-    averaged = sum(s.iloc[:, :common] for s in stacks) / len(stacks)
-    averaged.columns = [f"rank_{i}" for i in range(common)]
+    # Average each rank by position over the draws where it solved, and say
+    # how many that was. A rank that solved in fewer than half of them gets
+    # the draw-level rule above: an average over the minority is not kept.
+    n_ranks = max(s.shape[1] for s in stacks)
+    labels = [f"rank_{i}" for i in range(n_ranks)]
+    aligned = [s.reindex(columns=range(n_ranks)) for s in stacks]
+    counts = pd.Series(
+        [sum(bool(s[i].notna().all()) for s in aligned) for i in range(n_ranks)],
+        index=labels,
+        dtype=int,
+    )
+    totals = sum(s.fillna(0.0) for s in aligned)
+    totals.columns = labels
+    kept = counts[2 * counts >= len(stacks)].index
+    if kept.empty:
+        raise ValueError(
+            f"No frontier rank solved in at least half of the {len(stacks)} "
+            "usable draws, so no rank can be averaged. First failure: "
+            f"{first_error}"
+        )
+    averaged = totals[kept] / counts[kept]
     return ResampledFrontier(
         weights=averaged,
         n_draws=len(stacks),
         n_failed=n_failed,
         first_error=first_error,
+        rank_counts=counts,
     )
 
 

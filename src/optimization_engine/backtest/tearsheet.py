@@ -151,8 +151,10 @@ def _caveats(
         )
     if int(run.meta.spec.get("execution_lag", 0)) == 0:
         caveats.append(
-            "Orders fill on the close of the decision date. A real desk trades "
-            "at least one period later, at a price it has not seen."
+            "Orders fill on the close before the bar each target is dated on, "
+            "and the target earns that bar: honest only if it used nothing "
+            "from that bar. A real desk trades at least one period after it "
+            "decides, at a price it has not seen."
         )
     if run.meta.degradations:
         caveats.append(

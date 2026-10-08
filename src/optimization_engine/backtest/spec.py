@@ -289,11 +289,13 @@ class BacktestSpec:
     Attributes:
         frequency: How often the book is traded back to its target weights.
         costs: The cost model. See :class:`CostSpec`.
-        execution_lag: Periods between the date a target becomes effective
-            and the date it is traded. Zero means the book is rebalanced on
-            the close of the decision date itself — free, instantaneous
-            execution, which no desk gets. One period is the honest default
-            for a daily panel where the decision is taken after the close.
+        execution_lag: Bars between the date a target is stamped with and
+            the bar it is first held over. Zero means a target dated ``t`` is
+            traded at the close before ``t`` and earns ``t``'s return, so
+            ``t`` is the first holding bar and the target may use nothing
+            from it — which is how the walk-forward runner dates its
+            schedule. A schedule dated by the close it was computed on needs
+            one: traded on the next bar, at a price it had not seen.
         periods_per_year: Observations per year, for annualizing.
         initial_capital: Starting NAV, in the currency the prices are quoted
             in. Cosmetic for returns — they are fractions either way — but

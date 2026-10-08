@@ -17,7 +17,7 @@ reference** — generated from the docstrings, so every exported name carries
 its signature, parameters, units and errors — is published to GitHub Pages
 from `main`, and builds locally with `pip install "finport-optengine[docs]"`
 then `python scripts/build_api_docs.py`. **[`docs/ERRORS.md`](docs/ERRORS.md)**
-is the refusal contract: which of the twenty-four exception types to catch,
+is the refusal contract: which of the twenty-five exception types to catch,
 which are recoverable, the CLI's exit codes, and — the part that catches
 people — the failures that are *reported* rather than raised.
 
@@ -95,6 +95,23 @@ fatal — a solver that crashed is not a mandate with no solution.
 not stress testing; the old import path works for one release and warns.
 Stress scenarios live in `stress.py`.
 
+**A threshold or rank universe acts one bar later at `execution_lag=0`.**
+Those rules judge date `t` on `t`'s own data, and with no lag the book chosen
+on `t` is held over `t`, so the runner reads them from the bar before
+(`Eligibility.same_bar` says which universes this applies to). Rolling rules,
+membership frames and any run with a lag of one or more read as before.
+`delisting_grace` likewise measures silence on the bars *before* the
+decision: with `0`, a name is dropped by the first decision after the bar it
+went quiet on, not by a decision on that bar.
+
+**At `execution_lag=0` a schedule's date is the first bar its target is
+held over.** The target is traded at the previous close and earns that
+date's return, so it must use nothing from that date. That is how
+`walk_forward_run` dates its schedule; a signal computed on `t`'s close and
+stamped `t` needs `execution_lag=1`. `run_backtest` (and `backtest_weights`)
+now raise a `UserWarning` when handed a dated frame at lag 0; results do not
+change.
+
 ## Where things live
 
 | You want | Import from `optimization_engine` |
@@ -132,6 +149,12 @@ optengine optimize --config c.yaml --sample --json
 optengine backtest --config c.yaml --sample --json
 ```
 
+`optimize`, `backtest` and `check` need exactly one data source — `--prices`,
+`--provider`, `--yahoo` or `--sample` — and exit 2 without one; there is no
+implicit sample panel any more. `data_source.synthetic` in the payload says
+whether the numbers describe a market at all. `optimize --json` writes no
+workbook unless `--output` names one, so `output_path` is `null` by default.
+
 Every payload carries `schema_version`; check the major and refuse one you
 do not know. A command that fails before producing a result still emits JSON
 — an object with `error` and `exit_code` — so a caller never has to
@@ -162,8 +185,17 @@ prices. Three of the five read filesystem paths — `config_path` and
 `prices_path` — and nothing writes a file, fetches over the network, or
 touches a keyed provider.
 
+**Paths are confined.** Only under the server's working directory, unless it
+was started with `--root DIR` or `OPTENGINE_MCP_ROOTS`; relative paths resolve
+against the first root; network and device paths, unexpected extensions and
+oversized files are refused before anything is read. A file that does not
+parse comes back as path, exception type and position, not the parser's
+message — run `optengine check` on it locally to see that.
+
 Solving blocks: a large solve is seconds of CPU and these tools are
-synchronous. That is an optimizer working, not a hung server.
+synchronous. That is an optimizer working, not a hung server. One call is
+capped at 200 assets, 10,000 rows and 250 backtest re-solves; the limits
+are `MAX_ASSETS`, `MAX_ROWS` and `MAX_RESOLVES` in `mcp_server`.
 
 ## What the library is opinionated about
 

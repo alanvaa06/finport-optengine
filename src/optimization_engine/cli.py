@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
+import json
 import sys
 import traceback
 from collections.abc import Callable
@@ -11,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
+import yaml
 
 from optimization_engine.benchmark import BenchmarkError, BenchmarkSpec
 from optimization_engine.config import load_config
@@ -34,7 +37,11 @@ from optimization_engine.ingest import fields as ingest_fields
 from optimization_engine.optimizers._cvxpy_helpers import SolverFailure
 from optimization_engine.optimizers.factory import available_optimizers
 from optimization_engine.optimizers.requirements import requirements_for
-from optimization_engine.reporting.exporters import run_sheets, write_excel_report
+from optimization_engine.reporting.exporters import (
+    excel_writer,
+    run_sheets,
+    write_excel_report,
+)
 from optimization_engine.reporting.payloads import (
     SCHEMA_VERSION,
     backtest_payload,
@@ -81,7 +88,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override config.base_currency. Conversion uses FRED FX rates.",
     )
     _add_ingest_arguments(optimize)
-    optimize.add_argument("--output", default="outputs.xlsx", help="Output Excel path.")
+    optimize.add_argument(
+        "--output",
+        help="Excel path for the report. Defaults to outputs.xlsx in the "
+             "working directory, except under --json, where no workbook is "
+             "written unless this is given. An existing file is replaced, "
+             "and the run says so on stderr.",
+    )
     optimize.add_argument(
         "--accept-inaccurate",
         action="store_true",
@@ -285,8 +298,10 @@ def _build_parser() -> argparse.ArgumentParser:
     backtest.add_argument(
         "--execution-lag", type=int, default=1, metavar="N",
         help="Periods between a decision and its fill. Defaults to 1 — a desk "
-             "does not trade on a close it has not seen. Pass 0 for the "
-             "conventional (optimistic) same-period fill.",
+             "does not trade on a close it has not seen. Pass 0 to hold each "
+             "book from its decision date: the walk-forward decides from the "
+             "bar before, so 0 fills at the very close it decided on (the "
+             "conventional, optimistic fill).",
     )
     backtest.add_argument(
         "--holdout", metavar="YYYY-MM-DD",
@@ -324,8 +339,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="YAML/JSON rules file defining point-in-time membership: which "
              "names were investable, and when. Without one the universe is "
              "'every column of the panel, from the first bar', which is "
-             "survivorship bias and look-ahead in the same frame. See "
-             "optimization_engine.universe.rules for the schema.",
+             "survivorship bias and look-ahead in the same frame. With it "
+             "the walk-forward runs on the unaligned panel, so a late listing "
+             "and a delisting stay in it; only the initial solve is aligned. "
+             "See optimization_engine.universe.rules for the schema.",
     )
     backtest.add_argument(
         "--universe-policy", default="exclude",
@@ -345,7 +362,8 @@ def _build_parser() -> argparse.ArgumentParser:
              "--universe and opt-in on its own: a screen says what the "
              "mandate permits, this says what still trades. Omitted, "
              "delisting is not diagnosed at all and a name that stopped "
-             "printing is simply held.",
+             "printing is simply held. Given, the walk-forward runs on the "
+             "unaligned panel, as with --universe.",
     )
     backtest.add_argument(
         "--output", help="Optional Excel path for the tearsheet frames."
@@ -473,8 +491,7 @@ def _load_stress_into(config, args: argparse.Namespace) -> int:
     try:
         config.stress = load_shocks(path)
     except (OSError, StressError) as exc:
-        print(f"Could not read stress scenarios from {path}: {exc}", file=sys.stderr)
-        return 2
+        return _fail(args, f"Could not read stress scenarios from {path}: {exc}")
     print(f"Loaded {len(config.stress)} stress scenario(s) from {path}")
     return 0
 
@@ -512,12 +529,16 @@ def _load_universe_for(args: argparse.Namespace, returns, prices):
         rules = load_universe_rules(path)
         universe = rules.build(returns=returns, prices=prices)
     except (OSError, UniverseError) as exc:
-        print(f"Could not read the universe from {path}: {exc}", file=sys.stderr)
-        return 2
+        return _fail(args, f"Could not read the universe from {path}: {exc}")
     print(rules.describe())
 
     policy = getattr(args, "universe_policy", "exclude")
-    cells, bars, names = count_unresolved(universe, returns.index, list(returns.columns))
+    cells, bars, names = count_unresolved(
+        universe,
+        returns.index,
+        list(returns.columns),
+        execution_lag=getattr(args, "execution_lag", None),
+    )
     if cells:
         # Unconditionally on stderr, like the alignment log and for the same
         # reason: the library refuses to pick a collapse policy, this command
@@ -561,13 +582,16 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
     for issue in quality.warnings:
         print(f"Data warning — {issue.describe()}", file=sys.stderr)
     if quality.errors and args.strict:
-        print(
+        return _fail(
+            args,
             "Refusing to optimize on data with errors. Drop --strict to "
             "proceed anyway.",
-            file=sys.stderr,
         )
-        return 2
 
+    # Every refusal below goes through `_fail` rather than a bare print, so
+    # the reason reaches the --json payload as well as stderr. Printed and
+    # returned, it left the payload saying only that the command "exited
+    # before producing a result".
     try:
         run = run_engine(
             returns,
@@ -578,37 +602,33 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
             run_stress=bool(config.stress),
         )
     except InfeasibleConstraintsError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
+        return _fail(args, str(exc))
     except StressError as exc:
-        print(f"Stress test failed: {exc}", file=sys.stderr)
-        return 2
+        return _fail(args, f"Stress test failed: {exc}")
     except MandateViolationError as exc:
         # Raised only under --strict-mandate, and *after* a successful solve:
         # the answer arrived and does not comply. It is a ValueError while
         # SolverFailure is a RuntimeError, so the clause below never sees it —
         # without this one the CLI would leak a traceback for the one failure
         # the flag exists to produce.
-        print(str(exc), file=sys.stderr)
-        print(
+        return _fail(
+            args,
+            f"{exc}\n"
             "  The mandate is satisfiable; this method did not satisfy it. "
             "Pick a method whose bounds are enforced inside the convex "
             "program, loosen the limit named above, or drop --strict-mandate "
             "and read the audit on the result.",
-            file=sys.stderr,
         )
-        return 2
     except SolverFailure as exc:
-        print(f"Optimization failed: {exc}", file=sys.stderr)
+        message = f"Optimization failed: {exc}"
         if config.max_tracking_error is not None or config.max_active_share is not None:
-            print(
-                "  A tracking-error or active-share budget is in force. A "
+            message += (
+                "\n  A tracking-error or active-share budget is in force. A "
                 "benchmark holding an asset your bounds cap below its index "
                 "weight sets a floor on tracking error that no allocation can "
-                "go below — raise the limit, or relax the bound.",
-                file=sys.stderr,
+                "go below — raise the limit, or relax the bound."
             )
-        return 2
+        return _fail(args, message)
 
     for warning in run.warnings:
         print(f"Warning — {warning}", file=sys.stderr)
@@ -662,15 +682,23 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
     _report_layer_exposures(run)
     performance = _report_versus_benchmark(run, config)
 
-    sheets = run_sheets(
-        run,
-        riskfree_rate=config.optimizer.risk_free_rate,
-        data_quality=quality,
-        walk_forward=walk_forward,
-        frontier_uncertainty=uncertainty,
-        performance=performance,
-    )
-    out = write_excel_report(args.output, sheets)
+    # Under --json the result is the document on stdout, so a workbook is
+    # written only when one is asked for; the human default stays, because
+    # a person running `optimize` expects a report to open.
+    output = args.output or (None if args.json else "outputs.xlsx")
+    out = None
+    sheets: dict = {}
+    if output is not None:
+        sheets = run_sheets(
+            run,
+            riskfree_rate=config.optimizer.risk_free_rate,
+            data_quality=quality,
+            walk_forward=walk_forward,
+            frontier_uncertainty=uncertainty,
+            performance=performance,
+        )
+        _announce_overwrite(output)
+        out = write_excel_report(output, sheets)
     if walk_forward is not None:
         comparison = run.in_vs_out_of_sample(
             walk_forward, config.optimizer.risk_free_rate
@@ -702,11 +730,33 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
                     f"    {name:<18} weight RMSE {row['weight_rmse']:.2%} · "
                     f"worst position {row['max_weight_drift']:.2%}"
                 )
-    print(f"Wrote {out} ({len(sheets)} sheets)")
+    if out is not None:
+        print(f"Wrote {out} ({len(sheets)} sheets)")
     _capture(
-        args, optimization_payload(run, output_path=str(out), alignment=alignment)
+        args,
+        optimization_payload(
+            run,
+            output_path=str(out) if out is not None else None,
+            alignment=alignment,
+            quality=quality,
+            ingest=inputs.ingest,
+            data_source=inputs.data_source,
+        ),
     )
     return 0
+
+
+def _announce_overwrite(path: str | Path) -> None:
+    """Say on stderr that a file is about to be replaced.
+
+    Replacing is still what happens — a re-run that refused to overwrite
+    its own last report would break the commonest workflow there is — but
+    not in silence: `optimize` used to replace an `outputs.xlsx` it had
+    never been asked to write, and the first anyone heard of it was the
+    missing workbook.
+    """
+    if Path(path).exists():
+        print(f"  Overwriting {path}.", file=sys.stderr)
 
 
 def _apply_benchmark_flags(
@@ -860,8 +910,7 @@ def _cmd_describe(args: argparse.Namespace) -> int:
     try:
         req = requirements_for(args.name)
     except KeyError as exc:
-        print(str(exc).strip("\""), file=sys.stderr)
-        return 2
+        return _fail(args, str(exc).strip("\""))
     print(f"{req.display_name}  ({req.name})")
     print(f"\n  {req.summary}")
     print(f"\nUse it when:\n  {req.when_to_use}")
@@ -1051,7 +1100,8 @@ def _load_prices_for(args: argparse.Namespace):
     """Resolve the price panel from whichever legacy flag names it.
 
     ``--provider`` is handled by :func:`_prepare_inputs`, which needs the
-    whole ingest result rather than the prices alone.
+    whole ingest result rather than the prices alone. Exactly one source has
+    been named by the time this runs — :func:`_data_source` checked.
     """
     if getattr(args, "yahoo", None):
         if args.yahoo_start:
@@ -1059,9 +1109,71 @@ def _load_prices_for(args: argparse.Namespace):
                 args.yahoo, start=args.yahoo_start, end=args.yahoo_end
             )
         return load_prices_yahoo(args.yahoo, period=args.yahoo_period)
-    if args.sample or not args.prices:
+    if args.sample:
         return sample_dataset()
     return load_prices(args.prices, sheet_name=args.sheet)
+
+
+def _split_identifiers(raw: str | None) -> list[str]:
+    return [token for token in str(raw or "").replace(",", " ").split() if token]
+
+
+def _data_source(args: argparse.Namespace) -> dict[str, object]:
+    """The one panel this run reads, described the way the payload reports it.
+
+    A source has to be named. ``--sample`` used to be what a command fell
+    back to when ``--prices`` was missing, so a forgotten flag produced an
+    exit-0 allocation on synthetic data with nothing on any stream saying
+    so. Naming two is refused for the same reason: ``--sample`` silently won
+    over ``--prices``, which is the same substitution reached the other way.
+
+    Raises:
+        ValueError: When the command line names no source, or more than one.
+            The message lists the flags.
+    """
+    named = [
+        flag
+        for flag, present in (
+            ("--prices", getattr(args, "prices", None)),
+            ("--provider", getattr(args, "provider", None)),
+            ("--yahoo", getattr(args, "yahoo", None)),
+            ("--sample", getattr(args, "sample", False)),
+        )
+        if present
+    ]
+    if not named:
+        raise ValueError(
+            "No price data given. Pass --prices FILE, --provider NAME with "
+            "--identifiers, --yahoo TICKERS, or --sample for the built-in "
+            "synthetic panel."
+        )
+    if len(named) > 1:
+        raise ValueError(
+            f"Pass one data source, not {len(named)}: {', '.join(named)}. "
+            "It would otherwise be ambiguous which panel the result describes."
+        )
+    source: dict[str, object] = {
+        "kind": {"--prices": "file", "--provider": "provider", "--yahoo": "yahoo",
+                 "--sample": "sample"}[named[0]],
+        "synthetic": False,
+        "path": None,
+        "provider": None,
+        "identifiers": None,
+    }
+    if named[0] == "--prices":
+        source["path"] = args.prices
+    elif named[0] == "--yahoo":
+        source["identifiers"] = _split_identifiers(args.yahoo)
+    elif named[0] == "--provider":
+        source["provider"] = args.provider
+        source["identifiers"] = _split_identifiers(getattr(args, "identifiers", None))
+        source["path"] = getattr(args, "file_path", None) if args.provider == "file" else None
+        # The ingest layer has a synthetic provider of its own; it is no more
+        # market data than --sample is.
+        source["synthetic"] = args.provider == "sample"
+    else:
+        source["synthetic"] = True
+    return source
 
 
 @dataclass
@@ -1076,6 +1188,59 @@ class _Inputs:
     #: One sentence per change alignment made to the panel. Empty means
     #: nothing was dropped, which is a claim worth being able to make.
     alignment: list[str]
+    #: Where the prices came from, as :func:`_data_source` describes it.
+    data_source: dict[str, object]
+    #: The ingest the panel came from, for the payload's resolved window;
+    #: ``None`` for ``--prices``, ``--sample`` and ``--yahoo``.
+    ingest: object = None
+    #: The panel a point-in-time backtest walks over — every date, with only
+    #: the gaps *inside* a name's life aligned away — and its returns. Built
+    #: only when ``--universe`` or ``--delisting-grace`` asks for it; see
+    #: :func:`_point_in_time_panel`.
+    pit_prices: pd.DataFrame | None = None
+    pit_returns: pd.DataFrame | None = None
+
+
+def _point_in_time_panel(prices: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+    """The panel a universe or a delisting rule has to see: listings and delistings left in.
+
+    ``align_panel(method="common")`` keeps only the dates every name printed
+    on, which is [last listing, first delisting]. That is the right sample for
+    one covariance, and the wrong one for a backtest whose screen exists to
+    say when a name arrived and whose delisting rule exists to sell one that
+    stopped: the screen never sees the late name arrive, and the run ends on
+    the day the first name delists, so the rule can never fire.
+
+    Here the leading and trailing runs of missing prices are kept — they are
+    the listing and delisting the walk-forward reads point in time — and only
+    a gap *inside* a name's life is aligned away, by dropping that date as the
+    common alignment would. The move across such a gap is then booked as one
+    period, exactly as on the aligned panel.
+
+    Args:
+        prices: The raw price panel, after currency conversion.
+
+    Returns:
+        ``(prices, returns, sentence)`` — the panel, its returns (missing
+        before a name's first price and after its last), and one sentence for
+        the alignment log saying what the walk-forward runs on.
+    """
+    out = prices.sort_index()
+    out = out[~out.index.duplicated(keep="last")]
+    printed = out.notna()
+    alive = printed.cummax() & printed[::-1].cummax()[::-1]
+    interior = (alive & ~printed).any(axis=1)
+    n_interior = int(interior.sum())
+    out = out.loc[~interior]
+    returns = prices_to_returns(out)
+    sentence = (
+        f"The walk-forward runs on the unaligned panel, {len(out)} date(s), "
+        "because --universe or --delisting-grace reads listings and "
+        "delistings point in time; only interior gaps are aligned away "
+        f"({n_interior} date(s) on which a listed name had no price). The "
+        "alignment above applies to the initial solve."
+    )
+    return out, returns, sentence
 
 
 def _fail(args: argparse.Namespace, message: str, code: int = 2) -> int:
@@ -1115,6 +1280,12 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
     asset, and a covariance estimated on three years of a twenty-year
     panel is not the estimate the config asked for.
 
+    The common window is wrong for one thing: a backtest that reads
+    listings and delistings point in time. With ``--universe`` or
+    ``--delisting-grace`` the inputs also carry the panel before that cut,
+    with only interior gaps aligned away (:func:`_point_in_time_panel`), and
+    ``backtest`` walks forward on it.
+
     Returns:
         The inputs — including the alignment log — or an exit code when
         something the caller can fix is wrong: printed on stderr, and
@@ -1122,10 +1293,40 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
     """
     from optimization_engine.data.quality import align_panel, analyze_prices
 
-    config = load_config(args.config)
+    try:
+        data_source = _data_source(args)
+    except ValueError as exc:
+        return _fail(args, str(exc))
+    if data_source["synthetic"]:
+        # On stderr, like the alignment log: under --json it is the only
+        # stream a person reads, and the payload carries the same fact.
+        print(
+            "  Data: a synthetic panel — the numbers below describe no market.",
+            file=sys.stderr,
+        )
+
+    # Inside a handler, because a config that cannot be read is the most
+    # ordinary input error there is. Outside one, a missing file or a
+    # misspelt key escaped as a traceback with exit 1 — the code that means
+    # the engine ran and the answer is no — and under --json it fell into
+    # the net meant for defects. The exception's type stays in the message,
+    # which is how a caller tells a missing file from a malformed one.
+    try:
+        config = load_config(args.config)
+    except (yaml.YAMLError, json.JSONDecodeError) as exc:
+        return _fail(
+            args,
+            f"Could not load the config {args.config}: it is not valid YAML "
+            f"or JSON ({type(exc).__name__}: {exc})",
+        )
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        return _fail(
+            args, f"Could not load the config {args.config}: {type(exc).__name__}: {exc}"
+        )
     _apply_estimator_flags(config, args)
 
     volumes = None
+    ingested = None
     ingested_currency = None
     try:
         if getattr(args, "provider", None):
@@ -1141,22 +1342,41 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
         return _fail(args, f"Yahoo Finance error: {exc}")
     except IngestError as exc:
         return _fail(args, f"Ingest error: {exc}")
+    except (OSError, ValueError) as exc:
+        # A price file that is missing, has an extension no reader takes, or
+        # whose index will not parse as dates: the same input error as a
+        # bad config, and the same exit code.
+        return _fail(
+            args, f"Could not load the price panel: {type(exc).__name__}: {exc}"
+        )
 
     if getattr(args, "base_currency", None):
         config.base_currency = args.base_currency.upper()
-    if ingested_currency:
-        # The ingest step converted from the provider's own currency
-        # metadata. Applying ``config.currencies`` on top would convert the
-        # panel twice, so the config's map is set aside and the base is the
-        # one the panel was actually converted into.
-        if config.currencies:
+    if ingested is not None and ingested_currency:
+        # The ingest step converted the series whose currency the provider
+        # declared, and stamped them with the base. Applying
+        # ``config.currencies`` to those would convert them twice, so their
+        # entries are set aside — and only theirs: a series that declared no
+        # currency (every file series) arrived unconverted, and the config
+        # is the only thing that says what it is quoted in.
+        base = ingested_currency.upper()
+        converted = {
+            name for name, record in ingested.panel.meta.items()
+            if record.currency == base
+        }
+        exempt = sorted(a for a in config.currencies if a in converted)
+        if exempt:
             print(
-                f"  Currency: the panel was converted to {ingested_currency.upper()} "
-                "on ingest, so the config's currencies map is not applied again.",
+                f"  Currency: {', '.join(exempt)} were converted to {base} on "
+                "ingest, so the config's currencies map is not applied to "
+                "them again.",
                 file=sys.stderr,
             )
-        config.base_currency = ingested_currency.upper()
-    elif config.currencies:
+        config.currencies = {
+            a: c for a, c in config.currencies.items() if a not in converted
+        }
+        config.base_currency = base
+    if config.currencies:
         try:
             prices = apply_fx_conversion(prices, config)
         except FXError as exc:
@@ -1170,9 +1390,42 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
             )
         prices = prices[common]
 
+    # Before anything is annualized — the quality report included. A config
+    # that never set periods_per_year left 252 in place for monthly data, so
+    # the factor comes from the ingest interval or the dates instead, and a
+    # value the config does state is checked against them.
+    from optimization_engine.config import stated_keys
+    from optimization_engine.data.frequency import (
+        FrequencyMismatchError,
+        resolve_periods_per_year,
+    )
+
+    try:
+        config.periods_per_year, annualization = resolve_periods_per_year(
+            prices.index,
+            stated=(
+                config.periods_per_year
+                if "periods_per_year" in stated_keys(args.config)
+                else None
+            ),
+            interval=args.ingest_interval if ingested is not None else None,
+            default=config.periods_per_year,
+        )
+    except FrequencyMismatchError as exc:
+        return _fail(args, f"Annualization error: {exc}")
+    if annualization:
+        print(f"  Annualization: {annualization}", file=sys.stderr)
+
     # Quality is read off the *raw* panel on purpose: aligning first would
     # hide the very gaps the report exists to name.
     quality = analyze_prices(prices, periods_per_year=config.periods_per_year)
+
+    # A point-in-time backtest needs the panel the common alignment below is
+    # about to cut. Built from the same raw prices, before that cut.
+    pit_prices = pit_returns = None
+    pit_sentence = None
+    if getattr(args, "universe", None) or getattr(args, "delisting_grace", None) is not None:
+        pit_prices, pit_returns, pit_sentence = _point_in_time_panel(prices)
 
     # `method="common"` keeps the dates on which every asset is present.
     # The alternatives were rejected deliberately: `"ffill"` fabricates
@@ -1203,6 +1456,8 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
             f"Dropped {n_rows - len(returns)} period(s) whose return could "
             "not be computed from the aligned prices."
         )
+    if pit_sentence is not None:
+        alignment.append(pit_sentence)
     # Unconditionally on stderr: stdout is the parsed stream under
     # `--json`, and a truncated sample is not an advanced-mode detail.
     for action in alignment:
@@ -1224,6 +1479,10 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
         quality=quality,
         volumes=volumes,
         alignment=alignment,
+        data_source=data_source,
+        ingest=ingested,
+        pit_prices=pit_prices,
+        pit_returns=pit_returns,
     )
 
 
@@ -1289,9 +1548,15 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         inputs.config, inputs.prices, inputs.returns, inputs.volumes
     )
     alignment = inputs.alignment
+    # With a universe or a delisting rule the walk-forward runs on the
+    # point-in-time panel; the initial solve below still needs the aligned
+    # one, because a covariance cannot be estimated across missing prices.
+    point_in_time = inputs.pit_returns is not None
+    walk_returns = inputs.pit_returns if inputs.pit_returns is not None else returns
+    walk_prices = inputs.pit_prices if inputs.pit_prices is not None else prices
     if _load_stress_into(config, args) != 0:
         return 2
-    universe = _load_universe_for(args, returns, prices)
+    universe = _load_universe_for(args, walk_returns, walk_prices)
     if isinstance(universe, int):
         return universe
 
@@ -1313,8 +1578,11 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
             name=Path(args.config).stem,
         )
     except SpecValidationError as exc:
-        print(f"{exc} Pass --initial-capital.", file=sys.stderr)
-        return 2
+        # The hint only for the one validation it answers: appended to every
+        # spec error, it told a caller with a negative --execution-lag to pass
+        # --initial-capital.
+        hint = " Pass --initial-capital." if "initial_capital" in str(exc) else ""
+        return _fail(args, f"{exc}{hint}")
     print(spec.describe())
     if spec.costs.uses_volume and volumes is None:
         print(
@@ -1325,11 +1593,14 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         )
 
     evaluation = returns
+    walk_evaluation = walk_returns
     if args.holdout:
         evaluation = gate_returns(returns, args.holdout)
+        walk_evaluation = gate_returns(walk_returns, args.holdout)
         print(
-            f"  Holdout: walk-forward sees {len(evaluation)} of {len(returns)} "
-            f"observations; everything after {args.holdout} is withheld."
+            f"  Holdout: walk-forward sees {len(walk_evaluation)} of "
+            f"{len(walk_returns)} observations; everything after "
+            f"{args.holdout} is withheld."
         )
 
     try:
@@ -1341,13 +1612,19 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         return _fail(args, f"The initial solve was refused: {exc}")
     except SolverFailure as exc:
         return _fail(args, f"The initial solve failed: {exc}")
+    if point_in_time:
+        # The walk-forward, the sweep and the tearsheet all read the run's
+        # ``returns``. Every window is re-solved from its own rows, so handing
+        # them the point-in-time panel changes what they walk over and nothing
+        # about the initial solve.
+        run = dataclasses.replace(run, returns=walk_evaluation)
     try:
         walk = run.walk_forward_run(
             lookback=args.lookback,
             rebalance_every=args.rebalance_every,
             spec=spec,
             expanding=args.expanding,
-            prices=prices,
+            prices=walk_prices,
             volumes=volumes,
             universe=universe,
             # Only when there is a universe to read it under. Passed with no
@@ -1361,16 +1638,23 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         # the message has to say which flag chose it: a run that stopped
         # because a warm-up period could not be evaluated has not found a
         # problem with the data.
-        print(f"Universe failed: {exc}", file=sys.stderr)
-        return 2
+        return _fail(args, f"Universe failed: {exc}")
     except ValueError as exc:
-        print(f"Walk-forward failed: {exc}", file=sys.stderr)
-        return 2
+        return _fail(args, f"Walk-forward failed: {exc}")
 
     print(f"  {walk.run.describe()}")
     print(f"  {walk.describe()}")
     if walk.n_failures:
         print(f"  {walk.n_failures} solve(s) failed; the previous book was carried forward.")
+        if point_in_time and any("missing values" in reason for reason in walk.failures):
+            print(
+                "  On the point-in-time panel a solve fails when a name it is "
+                "shown has missing returns in its window: a recent listing, or "
+                "one that stopped printing. To admit only names with a full "
+                "window, add a rule {kind: rolling, panel: returns, window: "
+                f"{args.lookback}, agg: count, op: '>=', value: {args.lookback}}}"
+                "; for names that stopped printing, set --delisting-grace."
+            )
 
     sweep_results = None
     overfitting = None
@@ -1392,7 +1676,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
             rebalance_every=args.rebalance_every,
             spec=spec,
             expanding=args.expanding,
-            prices=prices,
+            prices=walk_prices,
             volumes=volumes,
             universe=universe,
             universe_policy=args.universe_policy if universe is not None else None,
@@ -1420,8 +1704,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         # ``tearsheet`` applies ``config.stress`` to the book the walk-forward
         # ended on, so a shock naming an asset outside the panel surfaces here
         # rather than at the solve.
-        print(f"Stress test failed: {exc}", file=sys.stderr)
-        return 2
+        return _fail(args, f"Stress test failed: {exc}")
     print(f"  {sheet.tca.describe()}")
     if sheet.deflated_sharpe is not None:
         print(f"  {sheet.deflated_sharpe.describe()}")
@@ -1437,7 +1720,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         locked = walk.weights_history.iloc[-1]
         holdout_spec = spec.with_(is_out_of_sample=True, name=f"{spec.name}-holdout")
         outcome = final_holdout_run(
-            returns,
+            walk_returns,
             args.holdout,
             # The held-out replay is a real run and must be priced the same
             # way: without the volume panel it would silently fall back to the
@@ -1447,7 +1730,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
                 segment,
                 locked,
                 holdout_spec,
-                prices=prices.reindex(segment.index) if volumes is not None else None,
+                prices=walk_prices.reindex(segment.index) if volumes is not None else None,
                 volumes=(
                     volumes.reindex(index=segment.index, columns=segment.columns)
                     if volumes is not None
@@ -1469,6 +1752,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         frames = sheet.to_frames()
         if sweep_results is not None:
             frames["sweep"] = sweep_results.frame
+        _announce_overwrite(args.output)
         out = write_excel_report(args.output, frames)
         print(f"Wrote {out} ({len(frames)} sheets)")
     _capture(
@@ -1478,6 +1762,9 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
             tearsheet=sheet,
             output_path=str(out) if out is not None else None,
             alignment=alignment,
+            quality=inputs.quality,
+            ingest=inputs.ingest,
+            data_source=inputs.data_source,
         ),
     )
     return 0
@@ -1578,7 +1865,17 @@ def _cmd_check(args: argparse.Namespace) -> int:
             "the range needs a solver and none answered."
         )
 
-    _capture(args, check_payload(quality, report, diag, alignment=alignment))
+    _capture(
+        args,
+        check_payload(
+            quality,
+            report,
+            diag,
+            alignment=alignment,
+            ingest=inputs.ingest,
+            data_source=inputs.data_source,
+        ),
+    )
     if report.fatal_issues:
         print("\nNot ready to optimize.", file=sys.stderr)
         return 2
@@ -1678,7 +1975,10 @@ def _write_panel(path: Path, frame: pd.DataFrame) -> Path | None:
     if suffix == ".csv":
         frame.to_csv(path)
     elif suffix in {".xlsx", ".xls"}:
-        frame.to_excel(path, sheet_name="Precios")
+        # Through the shared writer: a provider's or a file's column names
+        # land in the header row, and must not be written as formulas.
+        with excel_writer(path) as writer:
+            frame.to_excel(writer, sheet_name="Precios")
     elif suffix == ".parquet":
         try:
             frame.to_parquet(path)
@@ -1703,7 +2003,8 @@ def _cmd_sample_data(args: argparse.Namespace) -> int:
     if out.suffix.lower() == ".csv":
         prices.to_csv(out)
     elif out.suffix.lower() in {".xlsx", ".xls"}:
-        prices.to_excel(out, sheet_name="Precios")
+        with excel_writer(out) as writer:
+            prices.to_excel(writer, sheet_name="Precios")
     elif out.suffix.lower() == ".parquet":
         prices.to_parquet(out)
     else:
@@ -1724,7 +2025,8 @@ def _cmd_fred(args: argparse.Namespace) -> int:
     if out.suffix.lower() == ".csv":
         df.to_csv(out)
     elif out.suffix.lower() in {".xlsx", ".xls"}:
-        df.to_excel(out)
+        with excel_writer(out) as writer:
+            df.to_excel(writer)
     elif out.suffix.lower() == ".parquet":
         df.to_parquet(out)
     else:
@@ -1797,6 +2099,27 @@ def _capture(args: argparse.Namespace, payload: dict[str, object]) -> None:
         sink["payload"] = payload
 
 
+def _escape_what_the_stream_cannot_encode() -> None:
+    """Write ``\\uXXXX`` for a character the output encoding lacks, not crash.
+
+    The narration uses a few characters outside the legacy Windows code
+    pages — α and δ in the method summaries, an arrow marking a binding
+    bucket. A console renders them, but a *piped* run on Windows encodes
+    with the ANSI code page (cp1252 on most Western machines), and there one
+    arrow raised ``UnicodeEncodeError`` half-way through the report: exit 1,
+    a traceback, and no workbook.
+
+    ``backslashreplace`` keeps the encoding the environment chose rather than
+    switching to UTF-8, so a consumer decoding with the code page still reads
+    every other character correctly. The ``--json`` document is unaffected
+    either way: ``json.dumps`` escapes non-ASCII itself.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="backslashreplace")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Parse the arguments and dispatch to the requested subcommand.
 
@@ -1805,11 +2128,13 @@ def main(argv: list[str] | None = None) -> int:
 
     Returns:
         A process exit code. ``0`` on success; ``1`` when the command ran and
-        the answer is negative — an infeasible mandate from ``check``, an
-        incomplete panel from ``ingest``, or, under ``--json``, a command that
-        raised; ``2`` when the command could not run at all. See
-        ``docs/ERRORS.md`` for the full contract.
+        the answer is negative — unusable data from ``check``, an incomplete
+        panel from ``ingest``, or, under ``--json``, a command that raised;
+        ``2`` when the command could not run at all, which includes a config
+        or price file that cannot be read and a mandate ``check`` finds
+        impossible. See ``docs/ERRORS.md`` for the full contract.
     """
+    _escape_what_the_stream_cannot_encode()
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.command == "optimize":
