@@ -246,3 +246,79 @@ def test_backtest_notes_are_empty_rather_than_absent():
 
     assert _notes(None) == {}
     assert _notes({}) == {}
+
+
+# ---------------------------------------------------------------------------
+# What the data looked like, and where it came from
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def flawed_panel(tmp_path):
+    """An unadjusted 4:1 split and an asset missing every other day for half
+    its history (25% interior gaps, an error by the quality report's rule)."""
+    import numpy as np
+    import pandas as pd
+
+    days = pd.bdate_range("2021-01-04", periods=600)
+    rng = np.random.default_rng(4)
+    split = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, 600)))
+    split[300:] /= 4
+    gappy = 50 * np.exp(np.cumsum(rng.normal(0, 0.01, 600)))
+    gappy[100:400:2] = np.nan
+    steady = 80 * np.exp(np.cumsum(rng.normal(0, 0.01, 600)))
+    path = tmp_path / "flawed.csv"
+    pd.DataFrame(
+        {"date": days, "SPLIT": split, "GAPPY": gappy, "OK": steady}
+    ).to_csv(path, index=False)
+    config = tmp_path / "cfg.yaml"
+    config.write_text("optimizer: min_variance\n")
+    return path, config
+
+
+def _codes(payload) -> dict[str, set[str]]:
+    found: dict[str, set[str]] = {}
+    for finding in payload["data_quality"]["findings"]:
+        found.setdefault(finding["code"], set()).add(finding["asset"])
+    return found
+
+
+@pytest.mark.parametrize("command", ["optimize", "backtest", "check"])
+def test_every_payload_carries_the_data_quality_findings(
+    capsys, tmp_path, flawed_panel, command
+):
+    """A run on flawed data exited 0 and its JSON never mentioned the flaws.
+
+    The console printed "Data error — GAPPY ..." on stderr; a machine reading
+    stdout saw a clean-looking book.
+    """
+    path, config = flawed_panel
+    argv = [command, "--config", str(config), "--prices", str(path), "--json"]
+    if command == "optimize":
+        argv += ["--output", str(tmp_path / "o.xlsx")]
+    if command == "backtest":
+        argv += ["--lookback", "252", "--rebalance-every", "63"]
+
+    _, payload = _run(capsys, argv)
+
+    quality = payload["data_quality"]
+    assert quality["usable"] is False
+    assert quality["clean"] is False
+    codes = _codes(payload)
+    assert codes["interior_gaps"] == {"GAPPY"}
+    assert codes["extreme_returns"] == {"SPLIT"}
+    gaps = next(f for f in quality["findings"] if f["code"] == "interior_gaps")
+    assert gaps["severity"] == "error"
+    assert gaps["message"] and gaps["suggestion"]
+    # check's original keys keep their meaning.
+    assert isinstance(quality["errors"], list) and quality["errors"]
+    assert quality["n_common_periods"] > 0
+
+
+def test_a_clean_panel_reports_no_findings_rather_than_no_key(capsys, tmp_path):
+    _, payload = _run(
+        capsys,
+        ["optimize", "--config", CONFIG, "--sample", "--output", str(tmp_path / "o.xlsx"), "--json"],
+    )
+    assert payload["data_quality"]["usable"] is True
+    assert isinstance(payload["data_quality"]["findings"], list)

@@ -235,6 +235,36 @@ def test_a_complete_panel_reports_an_empty_alignment_log():
     assert call("check_mandate", {"sample": True})["alignment"] == []
 
 
+def test_every_tool_reports_the_raw_panels_data_quality(tmp_path):
+    """optimize never looked at data quality; check looked after aligning.
+
+    Alignment removes the very gaps the report exists to name, so a panel
+    with an asset missing a quarter of its history came back from both tools
+    without a word about it. The report is now read off the raw panel, as the
+    CLI reads it, and travels in every payload.
+    """
+    import numpy as np
+    import pandas as pd
+
+    days = pd.bdate_range("2021-01-04", periods=600)
+    rng = np.random.default_rng(4)
+    gappy = 50 * np.exp(np.cumsum(rng.normal(0, 0.01, 600)))
+    gappy[100:400:2] = np.nan
+    steady = 80 * np.exp(np.cumsum(rng.normal(0, 0.01, 600)))
+    csv = tmp_path / "gappy.csv"
+    pd.DataFrame({"date": days, "GAPPY": gappy, "OK": steady}).to_csv(csv, index=False)
+
+    args = {"prices_path": str(csv), "optimizer": "min_variance"}
+    for tool, extra in (
+        ("optimize", {}),
+        ("check_mandate", {}),
+        ("backtest", {"lookback": 252, "rebalance_every": 63}),
+    ):
+        quality = call(tool, {**args, **extra})["data_quality"]
+        assert quality["usable"] is False, tool
+        assert {f["code"] for f in quality["findings"]} >= {"interior_gaps"}, tool
+
+
 def test_a_monthly_file_is_annualized_on_twelve_and_a_contradiction_refused(tmp_path):
     """The CLI's rule, over the protocol: the dates decide, a contradiction fails."""
     from optimization_engine.data.loader import sample_dataset

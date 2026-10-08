@@ -704,7 +704,10 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
                 )
     print(f"Wrote {out} ({len(sheets)} sheets)")
     _capture(
-        args, optimization_payload(run, output_path=str(out), alignment=alignment)
+        args,
+        optimization_payload(
+            run, output_path=str(out), alignment=alignment, quality=quality
+        ),
     )
     return 0
 
@@ -1516,6 +1519,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
             tearsheet=sheet,
             output_path=str(out) if out is not None else None,
             alignment=alignment,
+            quality=inputs.quality,
         ),
     )
     return 0

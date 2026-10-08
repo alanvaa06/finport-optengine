@@ -45,7 +45,12 @@ import pandas as pd
 #: ``--json`` could not see the scenarios at all, which made the one number
 #: worth automating an alert on — the worst case — the one number the
 #: structured output omitted.
-SCHEMA_VERSION = "2.2"
+#:
+#: ``2.3`` adds ``data_quality`` to the optimize and backtest payloads, and
+#: ``usable``, ``clean`` and ``findings`` inside the one ``check`` already
+#: carried. A run on a panel with an error-level finding exited 0 and its
+#: document never mentioned it; the findings reached stderr only.
+SCHEMA_VERSION = "2.3"
 
 
 def _num(value: Any) -> float | None:
@@ -313,6 +318,50 @@ def stress_payload(report: Any, *, as_of: Any = None) -> dict[str, Any] | None:
     }
 
 
+def data_quality_payload(quality: Any) -> dict[str, Any] | None:
+    """What was wrong with the panel before anything was estimated from it.
+
+    ``findings`` is the structured form — one object per issue, with the
+    severity, the code and the asset as fields a consumer can filter on.
+    ``errors`` and ``issues`` are the string lists ``check`` has always
+    carried, kept with their meaning. ``usable`` is false when any finding is
+    an error, which ``optimize`` and ``backtest`` proceed past unless
+    ``--strict``; a consumer that wants the same rule reads that one boolean.
+
+    Args:
+        quality: A :class:`~optimization_engine.data.quality.DataQualityReport`,
+            read off the panel before alignment, or ``None``.
+
+    Returns:
+        A JSON-serializable dict, or ``None`` when nothing was supplied.
+    """
+    if quality is None:
+        return None
+    issues = list(getattr(quality, "issues", None) or ())
+    errors = getattr(quality, "errors", None)
+    return {
+        "usable": bool(getattr(quality, "is_usable", not errors)),
+        "clean": bool(getattr(quality, "is_clean", not issues)),
+        "errors": _strings(errors),
+        "issues": _strings(issues),
+        "findings": [
+            {
+                "severity": str(getattr(issue, "severity", "")),
+                "code": str(getattr(issue, "code", "")),
+                "asset": (
+                    str(issue.asset) if getattr(issue, "asset", None) is not None else None
+                ),
+                "message": str(getattr(issue, "message", "")),
+                "suggestion": str(getattr(issue, "suggestion", "") or ""),
+            }
+            for issue in issues
+        ],
+        "n_common_periods": int(getattr(quality, "n_common_periods", 0) or 0),
+        "common_start": str(getattr(quality, "common_start", None) or "") or None,
+        "common_end": str(getattr(quality, "common_end", None) or "") or None,
+    }
+
+
 def covariance_diagnostics_payload(diagnostics: Any) -> dict[str, Any] | None:
     """Whether the covariance estimate is worth the weights built on it.
 
@@ -392,6 +441,7 @@ def optimization_payload(
     *,
     output_path: str | None = None,
     alignment: Any = None,
+    quality: Any = None,
 ) -> dict[str, Any]:
     """The full result of one solve: weights, and what they rest on.
 
@@ -403,6 +453,8 @@ def optimization_payload(
             sentence per change made to the panel before it was
             differenced. Empty means the panel needed no changes, which
             is a different claim from "nobody looked".
+        quality: The raw panel's data-quality report. ``data_quality`` is
+            ``null`` without one, which is "not reported", not "clean".
 
     Returns:
         A JSON-serialisable dict. ``weights`` maps asset name to weight;
@@ -444,6 +496,9 @@ def optimization_payload(
         # to become rectangular. A late-listing asset truncates every
         # other series, and that is invisible in the weights.
         "alignment": _strings(alignment),
+        # And what was wrong with it before that. An asset missing a quarter
+        # of its history is an error finding that the run proceeds past.
+        "data_quality": data_quality_payload(quality),
         "output_path": output_path,
     }
 
@@ -479,13 +534,7 @@ def check_payload(
         "schema_version": SCHEMA_VERSION,
         "command": "check",
         "ready": ready,
-        "data_quality": {
-            "errors": quality_errors,
-            "issues": _strings(getattr(quality, "issues", None)),
-            "n_common_periods": int(getattr(quality, "n_common_periods", 0) or 0),
-            "common_start": str(getattr(quality, "common_start", None) or "") or None,
-            "common_end": str(getattr(quality, "common_end", None) or "") or None,
-        },
+        "data_quality": data_quality_payload(quality),
         # `data_quality` describes the panel as it arrived; `alignment`
         # describes what was done to it afterwards. Reading the first
         # without the second says what was wrong, not what was kept.
@@ -519,6 +568,7 @@ def backtest_payload(
     tearsheet: Any = None,
     output_path: str | None = None,
     alignment: Any = None,
+    quality: Any = None,
 ) -> dict[str, Any]:
     """What a simulated run of the process actually produced.
 
@@ -541,6 +591,8 @@ def backtest_payload(
             :func:`~optimization_engine.data.quality.align_panel`. A
             simulated track record that starts three years late because
             one asset listed late is not the same track record.
+        quality: The raw panel's data-quality report, as for
+            :func:`optimization_payload`.
     """
     meta = getattr(result, "meta", None)
     sheet_metadata = getattr(tearsheet, "metadata", None)
@@ -573,6 +625,7 @@ def backtest_payload(
         "degradations": _strings(getattr(meta, "degradations", None)),
         "notes": _notes(getattr(meta, "notes", None)),
         "alignment": _strings(alignment),
+        "data_quality": data_quality_payload(quality),
         "metrics": metrics,
         # The tearsheet applies the configured shocks to the book the run
         # ended on, so this is the stress of what would actually be held

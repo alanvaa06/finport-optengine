@@ -105,8 +105,8 @@ def _panel(
     prices_path: str | None,
     config: Any = None,
     config_path: str | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
-    """Resolve a price panel, its returns, and how the two were aligned.
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str], Any]:
+    """Resolve a price panel, its returns, how they were aligned, and its quality.
 
     Prices and returns are both returned because the two are used for
     different things — data-quality analysis reads prices, the optimizers
@@ -128,10 +128,13 @@ def _panel(
     Given the mandate, it also settles ``config.periods_per_year`` from the
     dates, as the CLI does — see
     :func:`~optimization_engine.data.frequency.resolve_periods_per_year` —
-    so a monthly file is not annualized on the default 252.
+    so a monthly file is not annualized on the default 252, and reads the
+    data-quality report off the panel *before* alignment, which would
+    otherwise remove the gaps the report exists to name. The fourth element
+    is that report, or ``None`` when no mandate was given.
     """
     from optimization_engine.data.loader import load_prices, prices_to_returns, sample_dataset
-    from optimization_engine.data.quality import align_panel
+    from optimization_engine.data.quality import align_panel, analyze_prices
 
     if sample and prices_path:
         raise ToolError(
@@ -154,8 +157,10 @@ def _panel(
             "No data given. Pass sample=True for the built-in panel, or "
             "prices_path pointing at a CSV, Excel or Parquet file of prices."
         )
+    quality = None
     if config is not None:
         _annualize(config, config_path, prices.index)
+        quality = analyze_prices(prices, periods_per_year=config.periods_per_year)
     # `method="common"` is the CLI's choice, for the CLI's reasons — and
     # the two surfaces must not disagree about what the same file means.
     # See `cli._prepare_inputs`, including the note on why an interior gap
@@ -170,7 +175,7 @@ def _panel(
             f"Dropped {n_rows - len(returns)} period(s) whose return could "
             "not be computed from the aligned prices."
         )
-    return aligned, returns, actions
+    return aligned, returns, actions, quality
 
 
 def _annualize(config: Any, config_path: str | None, index: pd.Index) -> None:
@@ -304,7 +309,6 @@ def check_mandate(
         covariance_diagnostics,
         covariance_from_config,
     )
-    from optimization_engine.data.quality import analyze_prices
     from optimization_engine.engine import resolve_expected_returns
     from optimization_engine.optimizers.factory import (
         constraints_from_config,
@@ -313,9 +317,8 @@ def check_mandate(
     from optimization_engine.optimizers.feasibility import analyze_feasibility
 
     config = _config(config_path, optimizer)
-    prices, returns, alignment = _panel(sample, prices_path, config, config_path)
+    _, returns, alignment, quality = _panel(sample, prices_path, config, config_path)
 
-    quality = analyze_prices(prices, periods_per_year=config.periods_per_year)
     cov = covariance_from_config(returns, config)
     diagnostics = covariance_diagnostics(
         cov, len(returns), config.covariance_method, config.ewma_lambda
@@ -372,7 +375,7 @@ def optimize(
     from optimization_engine.optimizers.feasibility import InfeasibleConstraintsError
 
     config = _config(config_path, optimizer)
-    _, returns, alignment = _panel(sample, prices_path, config, config_path)
+    _, returns, alignment, quality = _panel(sample, prices_path, config, config_path)
     try:
         run = run_engine(returns, config, raise_on_infeasible=True)
     except InfeasibleConstraintsError as exc:
@@ -384,7 +387,7 @@ def optimize(
         raise ToolError(f"The mandate has no solution: {exc}") from exc
     except SolverFailure as exc:
         raise ToolError(f"No solver could produce an allocation: {exc}") from exc
-    return optimization_payload(run, alignment=alignment)
+    return optimization_payload(run, alignment=alignment, quality=quality)
 
 
 @mcp.tool(
@@ -436,7 +439,7 @@ def backtest(
     from optimization_engine.optimizers._cvxpy_helpers import SolverFailure
 
     config = _config(config_path, optimizer)
-    _, returns, alignment = _panel(sample, prices_path, config, config_path)
+    _, returns, alignment, quality = _panel(sample, prices_path, config, config_path)
     spec = BacktestSpec(
         costs=CostSpec(commission_bps=commission_bps, slippage_bps=slippage_bps),
         periods_per_year=config.periods_per_year,
@@ -457,7 +460,10 @@ def backtest(
     except ValueError as exc:
         raise ToolError(f"The walk-forward could not run: {exc}") from exc
     return backtest_payload(
-        walk.run, tearsheet=run.tearsheet(walk.run), alignment=alignment
+        walk.run,
+        tearsheet=run.tearsheet(walk.run),
+        alignment=alignment,
+        quality=quality,
     )
 
 
