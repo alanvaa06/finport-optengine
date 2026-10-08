@@ -238,6 +238,100 @@ def implied_risk_aversion(
     return float((market_return - risk_free_rate) / market_variance)
 
 
+def market_portfolio(
+    market_weights: pd.Series | dict[str, float] | None, assets: list[str]
+) -> pd.Series:
+    """The equilibrium portfolio the prior is reverse-optimized from.
+
+    One definition for the solve and for the pre-flight
+    (:func:`~optimization_engine.optimizers.factory.effective_expected_returns`),
+    so the posterior a return target is checked against is the posterior the
+    solve optimizes.
+
+    Args:
+        market_weights: Market-capitalization weights, in any units, or
+            ``None`` for equal weights — a real assumption, not a neutral one.
+        assets: The universe, in the order the solve indexes it.
+
+    Returns:
+        Weights over ``assets`` summing to one. Assets the caps do not name
+        are held at zero.
+
+    Raises:
+        ValueError: If the caps sum to zero or less over ``assets``, leaving
+            no equilibrium portfolio to reverse-optimize from.
+    """
+    if market_weights is None:
+        return pd.Series(np.ones(len(assets)) / len(assets), index=assets)
+    mkt = pd.Series(market_weights, dtype=float).reindex(assets).fillna(0.0)
+    total = float(mkt.sum())
+    if total <= 0:
+        raise ValueError(
+            "Market-cap weights sum to zero, so there is no equilibrium "
+            "portfolio to reverse-optimize from. Provide positive weights "
+            "or leave them empty for equal weights."
+        )
+    return mkt / total
+
+
+def resolve_risk_aversion(
+    market: pd.Series,
+    cov_matrix: pd.DataFrame,
+    risk_aversion: float,
+    *,
+    calibrate: bool,
+    market_return: float | None,
+    risk_free_rate: float,
+) -> float:
+    """The δ the prior is built with: the configured one, or the implied one.
+
+    Shared by the solve and the pre-flight for the same reason as
+    :func:`market_portfolio`. The pre-flight used to read the configured δ
+    regardless of ``calibrate``, so with a 12% market return it checked
+    targets against a posterior built on δ = 2.5 while the solve used the
+    implied 6.95 — and called a reachable target unreachable.
+
+    Args:
+        market: The equilibrium portfolio, from :func:`market_portfolio`.
+        cov_matrix: The prior covariance Σ.
+        risk_aversion: The configured δ, used when not calibrating.
+        calibrate: Imply δ from the market's Sharpe ratio instead.
+        market_return: The market's expected return. Required when
+            ``calibrate`` is set.
+        risk_free_rate: Annualized risk-free rate.
+
+    Returns:
+        The risk-aversion coefficient δ.
+
+    Raises:
+        ConfigurationError: If ``calibrate`` is set with no ``market_return``.
+        ValueError: If the market portfolio has no variance to imply δ from.
+    """
+    if not calibrate:
+        return float(risk_aversion)
+    _require_market_return(calibrate, market_return)
+    weights = market.reindex(cov_matrix.columns).fillna(0.0).values
+    market_var = float(weights @ cov_matrix.values @ weights)
+    return implied_risk_aversion(float(market_return), market_var, risk_free_rate)
+
+
+def _require_market_return(calibrate: bool, market_return: float | None) -> None:
+    """Refuse a calibration that has nothing to calibrate against.
+
+    It used to fall back to the hand-set δ the flag exists to replace, and
+    say nothing.
+    """
+    from optimization_engine.optimizers import ConfigurationError
+
+    if calibrate and market_return is None:
+        raise ConfigurationError(
+            "calibrate_risk_aversion is set but no market_return was given. "
+            "Calibration implies δ from the market's Sharpe ratio, so it needs "
+            "the market's expected return (bl_market_return in the config). "
+            "Supply one, or turn calibration off to use risk_aversion as set."
+        )
+
+
 def implied_equilibrium_returns(
     market_weights: pd.Series,
     cov_matrix: pd.DataFrame,
@@ -423,10 +517,16 @@ class BlackLittermanOptimizer(BaseOptimizer):
                 ``calibrate_risk_aversion`` is set.
             market_return: The market's own expected return, used for calibration.
             calibrate_risk_aversion: Derive ``δ`` from the market's Sharpe ratio
-                instead of using the hard-coded default.
+                instead of using the hard-coded default. Requires
+                ``market_return``.
             **kwargs: Passed to the base class.
+
+        Raises:
+            ConfigurationError: If ``calibrate_risk_aversion`` is set without a
+                ``market_return`` to calibrate against.
         """
         super().__init__(*args, **kwargs)
+        _require_market_return(bool(calibrate_risk_aversion), market_return)
         self.market_weights = (
             pd.Series(market_weights) if isinstance(market_weights, dict) else market_weights
         )
@@ -444,31 +544,22 @@ class BlackLittermanOptimizer(BaseOptimizer):
         self._posterior_cov: pd.DataFrame | None = None
 
     def _market_portfolio(self) -> pd.Series:
-        if self.market_weights is None:
-            return pd.Series(
-                np.ones(len(self.assets)) / len(self.assets), index=self.assets
-            )
-        mkt = self.market_weights.reindex(self.assets).fillna(0.0)
-        total = float(mkt.sum())
-        if total <= 0:
-            raise ValueError(
-                "Market-cap weights sum to zero, so there is no equilibrium "
-                "portfolio to reverse-optimize from. Provide positive weights "
-                "or leave them empty for equal weights."
-            )
-        return mkt / total
+        return market_portfolio(self.market_weights, self.assets)
 
     def _solve(self) -> np.ndarray:
         if self.cov_matrix is None:
             raise ValueError("Covariance matrix required for Black-Litterman")
         mkt = self._market_portfolio()
 
-        delta = self.risk_aversion
-        if self.calibrate_risk_aversion and self.market_return is not None:
-            market_var = float(mkt.values @ self.cov_matrix.values @ mkt.values)
-            delta = implied_risk_aversion(
-                float(self.market_return), market_var, self.risk_free_rate
-            )
+        delta = resolve_risk_aversion(
+            mkt,
+            self.cov_matrix,
+            self.risk_aversion,
+            calibrate=self.calibrate_risk_aversion,
+            market_return=self.market_return,
+            risk_free_rate=self.risk_free_rate,
+        )
+        if self.calibrate_risk_aversion:
             self._diagnostics["implied_risk_aversion"] = delta
 
         post_mean, post_cov = black_litterman_posterior(

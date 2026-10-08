@@ -253,7 +253,13 @@ def effective_expected_returns(
 
     Returns:
         The vector the solve will see, or ``None`` when the method needs no
-        expected returns at all.
+        expected returns at all. For Black-Litterman that includes a δ implied
+        from ``bl_market_return`` when ``bl_calibrate_risk_aversion`` is set.
+
+    Raises:
+        ValueError: For a Black-Litterman config the solve would refuse — a
+            view outside the universe, market caps summing to zero, or (as a
+            ``ConfigurationError``) calibration with no market return.
     """
     if expected_returns is None and config.expected_returns:
         expected_returns = pd.Series(config.expected_returns)
@@ -262,25 +268,33 @@ def effective_expected_returns(
 
     from optimization_engine.optimizers.black_litterman import (
         black_litterman_posterior,
+        market_portfolio,
+        resolve_risk_aversion,
     )
 
+    spec = config.optimizer
     assets = list(cov_matrix.columns)
-    caps = config.optimizer.bl_market_caps
-    if caps:
-        market = pd.Series(caps).reindex(assets).fillna(0.0)
-        total = float(market.sum())
-        market = market / total if total > 0 else pd.Series(1.0 / len(assets), index=assets)
-    else:
-        market = pd.Series(1.0 / len(assets), index=assets)
     try:
+        # The market portfolio and δ come from the functions the solve itself
+        # calls. Rebuilding them here is how the pre-flight came to ignore a
+        # calibrated δ and check targets against a different posterior.
+        market = market_portfolio(spec.bl_market_caps or None, assets)
+        delta = resolve_risk_aversion(
+            market,
+            cov_matrix,
+            spec.risk_aversion,
+            calibrate=spec.bl_calibrate_risk_aversion,
+            market_return=spec.bl_market_return,
+            risk_free_rate=spec.risk_free_rate,
+        )
         posterior, _ = black_litterman_posterior(
             cov_matrix,
             market,
-            _decode_views(config.optimizer.bl_views),
-            config.optimizer.bl_view_confidences,
-            tau=config.optimizer.bl_tau,
-            risk_aversion=config.optimizer.risk_aversion,
-            risk_free_rate=config.optimizer.risk_free_rate,
+            _decode_views(spec.bl_views),
+            spec.bl_view_confidences,
+            tau=spec.bl_tau,
+            risk_aversion=delta,
+            risk_free_rate=spec.risk_free_rate,
         )
         posterior.name = "black_litterman_posterior"
         return posterior
