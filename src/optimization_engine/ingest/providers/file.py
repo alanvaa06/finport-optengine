@@ -112,6 +112,27 @@ class LocalFile(PriceProvider):
             notes="No network. What the file says is what you get.",
         )
 
+    def cache_token(self) -> str | None:
+        """The file's identity and its state: path, size and modification time.
+
+        The path alone let an edit made inside the TTL be answered with the
+        panel cached before it. Size and nanosecond mtime change on any
+        ordinary save; a content hash would also catch a same-size edit that
+        restores the old timestamp, at the price of reading the file on every
+        hit.
+
+        Returns:
+            ``None`` when there is no file to describe yet — the fetch then
+            refuses on its own terms.
+        """
+        if self._path is None or not self._path.is_file():
+            return None
+        stat = self._path.stat()
+        return (
+            f"{self._path.resolve()}|{self._sheet_name}|"
+            f"{stat.st_size}|{stat.st_mtime_ns}"
+        )
+
     def fetch_one(self, identifier: str, request: IngestRequest) -> PricePanel:
         """One identifier, by way of :meth:`fetch_batch`.
 

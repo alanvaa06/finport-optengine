@@ -968,3 +968,31 @@ def test_a_cache_hit_repeats_the_currency_warning_the_cold_run_gave(tmp_path):
     assert warm.from_cache
     assert any(note in w for w in warm.warnings), warm.warnings
 
+
+def test_an_edited_file_is_read_again_rather_than_served_from_cache(tmp_path):
+    """The key named the file; it has to name what the file held, too."""
+    import os
+
+    index = pd.bdate_range("2024-01-01", periods=20)
+    path = tmp_path / "panel.csv"
+    pd.DataFrame({"AAA": np.linspace(100.0, 120.0, 20)}, index=index).to_csv(
+        path, index_label="date"
+    )
+    request = IngestRequest(
+        identifiers=("AAA",), provider="file", start="2024-01-01",
+        end="2024-02-28", cache_dir=str(tmp_path / "cache"),
+    )
+    first = ingest(request, path=str(path))
+    assert ingest(request, path=str(path)).from_cache
+
+    pd.DataFrame({"AAA": np.linspace(300.0, 360.0, 20)}, index=index).to_csv(
+        path, index_label="date"
+    )
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
+    edited = ingest(request, path=str(path))
+
+    assert not edited.from_cache
+    assert float(edited.prices["AAA"].iloc[0]) == pytest.approx(300.0)
+    assert float(first.prices["AAA"].iloc[0]) == pytest.approx(100.0)
+
