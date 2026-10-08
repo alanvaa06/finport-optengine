@@ -83,6 +83,17 @@ def test_check_fails_and_names_the_constraint(infeasible_config, capsys):
     assert "Not ready to optimize." in captured.err
 
 
+def test_a_misspelt_config_key_is_exit_2_not_a_traceback(tmp_path, capsys):
+    # The human-mode half of the contract: the same failure without --json
+    # used to leak a traceback and exit 1.
+    config = tmp_path / "typo.yaml"
+    config.write_text("max_tracking_eror: 0.03\n")
+    assert main(["check", "--config", str(config), "--sample"]) == 2
+    err = capsys.readouterr().err
+    assert "max_tracking_eror" in err
+    assert "Traceback" not in err
+
+
 def test_optimize_writes_a_report_with_provenance(feasible_config, tmp_path, capsys):
     out_path = tmp_path / "report.xlsx"
     assert (

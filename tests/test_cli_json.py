@@ -154,42 +154,99 @@ def test_every_payload_declares_its_schema_version(capsys):
         assert payload["schema_version"] == SCHEMA_VERSION
 
 
+def _boom(*args, **kwargs):
+    raise RuntimeError("boom")
+
+
 @pytest.mark.parametrize(
-    ("argv", "expected_type"),
+    "argv",
     [
-        (["optimize", "--config", "/no/such/file.yaml", "--sample", "--json"],
-         "FileNotFoundError"),
-        (["check", "--config", "/no/such/file.yaml", "--sample", "--json"],
-         "FileNotFoundError"),
-        (["backtest", "--config", "/no/such/file.yaml", "--sample", "--json"],
-         "FileNotFoundError"),
+        ["optimize", "--config", CONFIG, "--sample", "--json"],
+        ["backtest", "--config", CONFIG, "--sample", "--json"],
     ],
 )
-def test_a_raised_exception_still_emits_json(capsys, argv, expected_type):
+def test_a_raised_exception_still_emits_json(capsys, monkeypatch, argv):
     """The half of the contract that a returned exit code does not cover.
 
     `_emit_json` originally caught only a command that *returned* non-zero.
-    A command that *raised* — an unreadable config being the cheapest way in
-    — printed a traceback and left stdout empty, which is exactly the "no
-    output versus output I could not parse" ambiguity this mode exists to
-    remove. The payload has to survive the exception, not just the failure.
+    A command that *raised* printed a traceback and left stdout empty, which
+    is exactly the "no output versus output I could not parse" ambiguity this
+    mode exists to remove. The payload has to survive the exception, not just
+    the failure.
+
+    The exception is injected rather than provoked. An unreadable config used
+    to be the cheapest way in, and it is now an input error with exit 2 —
+    which is what this branch is *not* for. It is the net under a defect.
     """
+    monkeypatch.setattr("optimization_engine.cli.run_engine", _boom)
     code, payload = _run(capsys, argv)
-    assert code != 0
+    assert code == 1
     assert payload["exit_code"] == code
     assert payload["schema_version"] == SCHEMA_VERSION
-    # The type and message, so a caller can tell a missing file from a bad
-    # one without scraping the traceback.
-    assert expected_type in payload["error"]
+    # The type and message, so a caller can tell one failure from another
+    # without scraping the traceback.
+    assert payload["error"] == "RuntimeError: boom"
 
 
-def test_the_traceback_survives_on_stderr(capsys):
+def test_the_traceback_survives_on_stderr(capsys, monkeypatch):
     """Catching the exception must not cost the human their diagnosis."""
-    main(["optimize", "--config", "/no/such/file.yaml", "--sample", "--json"])
+    monkeypatch.setattr("optimization_engine.cli.run_engine", _boom)
+    main(["optimize", "--config", CONFIG, "--sample", "--json"])
     captured = capsys.readouterr()
     json.loads(captured.out)
     assert "Traceback" in captured.err
-    assert "FileNotFoundError" in captured.err
+    assert "RuntimeError: boom" in captured.err
+
+
+@pytest.mark.parametrize("command", ["optimize", "check", "backtest"])
+def test_a_missing_config_is_an_input_error_not_a_crash(capsys, command):
+    """`docs/ERRORS.md` promises exit 2 and no traceback for a bad config.
+
+    The config was loaded outside every handler, so a missing file fell into
+    `_emit_json`'s net and came back as exit 1 with a traceback — the code
+    that means "the engine ran and the answer is no".
+    """
+    code = main([command, "--config", "/no/such/file.yaml", "--sample", "--json"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert code == 2
+    assert payload["exit_code"] == 2
+    # Still enough to tell a missing file from a malformed one.
+    assert "FileNotFoundError" in payload["error"]
+    assert "file.yaml" in payload["error"]
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # A misspelt key is refused by name.
+        ("max_tracking_eror: 0.03\n", "max_tracking_eror"),
+        # Not YAML at all.
+        ("bounds: [unclosed\n", "not valid YAML"),
+        # A known key holding a value of the wrong type.
+        ("ewma_lambda: not-a-number\n", "ValueError"),
+    ],
+)
+def test_a_malformed_config_is_exit_2_with_the_reason(capsys, tmp_path, text, expected):
+    config = tmp_path / "bad.yaml"
+    config.write_text(text)
+    code = main(["check", "--config", str(config), "--sample", "--json"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert code == 2
+    assert expected in payload["error"]
+    assert "Traceback" not in captured.err
+
+
+def test_a_missing_price_file_is_exit_2_with_the_reason(capsys, tmp_path):
+    missing = tmp_path / "nope.csv"
+    code = main(["optimize", "--config", CONFIG, "--prices", str(missing), "--json"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert code == 2
+    assert "nope.csv" in payload["error"]
+    assert "Traceback" not in captured.err
 
 
 def test_a_returned_failure_carries_its_reason(capsys, tmp_path):

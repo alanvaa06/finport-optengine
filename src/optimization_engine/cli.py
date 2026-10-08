@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import sys
 import traceback
 from collections.abc import Callable
@@ -11,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
+import yaml
 
 from optimization_engine.benchmark import BenchmarkError, BenchmarkSpec
 from optimization_engine.config import load_config
@@ -1122,7 +1124,24 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
     """
     from optimization_engine.data.quality import align_panel, analyze_prices
 
-    config = load_config(args.config)
+    # Inside a handler, because a config that cannot be read is the most
+    # ordinary input error there is. Outside one, a missing file or a
+    # misspelt key escaped as a traceback with exit 1 — the code that means
+    # the engine ran and the answer is no — and under --json it fell into
+    # the net meant for defects. The exception's type stays in the message,
+    # which is how a caller tells a missing file from a malformed one.
+    try:
+        config = load_config(args.config)
+    except (yaml.YAMLError, json.JSONDecodeError) as exc:
+        return _fail(
+            args,
+            f"Could not load the config {args.config}: it is not valid YAML "
+            f"or JSON ({type(exc).__name__}: {exc})",
+        )
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        return _fail(
+            args, f"Could not load the config {args.config}: {type(exc).__name__}: {exc}"
+        )
     _apply_estimator_flags(config, args)
 
     volumes = None
@@ -1141,6 +1160,13 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
         return _fail(args, f"Yahoo Finance error: {exc}")
     except IngestError as exc:
         return _fail(args, f"Ingest error: {exc}")
+    except (OSError, ValueError) as exc:
+        # A price file that is missing, has an extension no reader takes, or
+        # whose index will not parse as dates: the same input error as a
+        # bad config, and the same exit code.
+        return _fail(
+            args, f"Could not load the price panel: {type(exc).__name__}: {exc}"
+        )
 
     if getattr(args, "base_currency", None):
         config.base_currency = args.base_currency.upper()
@@ -1825,10 +1851,11 @@ def main(argv: list[str] | None = None) -> int:
 
     Returns:
         A process exit code. ``0`` on success; ``1`` when the command ran and
-        the answer is negative — an infeasible mandate from ``check``, an
-        incomplete panel from ``ingest``, or, under ``--json``, a command that
-        raised; ``2`` when the command could not run at all. See
-        ``docs/ERRORS.md`` for the full contract.
+        the answer is negative — unusable data from ``check``, an incomplete
+        panel from ``ingest``, or, under ``--json``, a command that raised;
+        ``2`` when the command could not run at all, which includes a config
+        or price file that cannot be read and a mandate ``check`` finds
+        impossible. See ``docs/ERRORS.md`` for the full contract.
     """
     _escape_what_the_stream_cannot_encode()
     parser = _build_parser()
