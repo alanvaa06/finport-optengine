@@ -1796,6 +1796,27 @@ def _capture(args: argparse.Namespace, payload: dict[str, object]) -> None:
         sink["payload"] = payload
 
 
+def _escape_what_the_stream_cannot_encode() -> None:
+    """Write ``\\uXXXX`` for a character the output encoding lacks, not crash.
+
+    The narration uses a few characters outside the legacy Windows code
+    pages — α and δ in the method summaries, an arrow marking a binding
+    bucket. A console renders them, but a *piped* run on Windows encodes
+    with the ANSI code page (cp1252 on most Western machines), and there one
+    arrow raised ``UnicodeEncodeError`` half-way through the report: exit 1,
+    a traceback, and no workbook.
+
+    ``backslashreplace`` keeps the encoding the environment chose rather than
+    switching to UTF-8, so a consumer decoding with the code page still reads
+    every other character correctly. The ``--json`` document is unaffected
+    either way: ``json.dumps`` escapes non-ASCII itself.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="backslashreplace")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Parse the arguments and dispatch to the requested subcommand.
 
@@ -1809,6 +1830,7 @@ def main(argv: list[str] | None = None) -> int:
         raised; ``2`` when the command could not run at all. See
         ``docs/ERRORS.md`` for the full contract.
     """
+    _escape_what_the_stream_cannot_encode()
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.command == "optimize":

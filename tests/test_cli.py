@@ -844,3 +844,68 @@ def test_a_universe_over_a_characteristic_panel_comes_in_through_the_rules_file(
     universe = json.loads(captured.out)["notes"]["universe"]
     # Every name but the thin one, on every decision.
     assert set(universe["breadth"].values()) == {len(assets) - 1}
+
+
+# ---------------------------------------------------------------------------
+# A piped run on a legacy console encoding
+# ---------------------------------------------------------------------------
+
+
+def _run_on_cp1252(argv: list[str], cwd: Path):
+    """Run the CLI in a child process whose stdio is cp1252, as on Windows.
+
+    A subprocess rather than ``capsys`` because the failure lives in the real
+    stream: pytest's capture encodes UTF-8 and would let every character
+    through. ``PYTHONIOENCODING`` is what a piped run on a Windows machine
+    with a legacy code page gets by default, and it reproduces the same thing
+    on any platform.
+    """
+    import os
+    import subprocess
+
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONUTF8"}
+    env["PYTHONIOENCODING"] = "cp1252"
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (str(SRC), env.get("PYTHONPATH", "")) if p
+    )
+    return subprocess.run(
+        [sys.executable, "-m", "optimization_engine.cli", *argv],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        timeout=600,
+    )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        # "α" in a summary line.
+        ["list-optimizers"],
+        # "δ" in one of the assumptions.
+        ["describe", "black_litterman"],
+    ],
+)
+def test_a_piped_run_on_a_legacy_encoding_does_not_crash(argv, tmp_path):
+    proc = _run_on_cp1252(argv, tmp_path)
+    assert b"Traceback" not in proc.stderr, proc.stderr.decode("cp1252", "replace")
+    assert proc.returncode == 0
+
+
+def test_optimize_writes_its_report_through_a_legacy_encoding(tmp_path):
+    """The example config marks a binding bucket with an arrow cp1252 lacks.
+
+    It used to raise ``UnicodeEncodeError`` half-way through the console
+    report, so the workbook was never written and the exit code was 1.
+    """
+    out = tmp_path / "report.xlsx"
+    proc = _run_on_cp1252(
+        ["optimize", "--config", str(EXAMPLE_CONFIG), "--sample", "--output", str(out)],
+        tmp_path,
+    )
+    assert b"Traceback" not in proc.stderr, proc.stderr.decode("cp1252", "replace")
+    assert proc.returncode == 0
+    assert out.exists()
+    # The character is escaped rather than lost, so the line still says what
+    # it said.
+    assert b"\u2190binding" in proc.stdout
