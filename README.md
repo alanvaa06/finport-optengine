@@ -708,6 +708,13 @@ The import name stays `optimization_engine` and the console script stays
 streamlit run app/streamlit_app.py
 ```
 
+`streamlit run` listens on every network interface unless told otherwise
+(`--server.address 127.0.0.1` keeps it local), so the page reads no file on
+the server that a visitor names: local data comes in through the uploaders,
+and a universe rules document in the Universe tab may not declare `panels:`
+paths — a screen over ADV or market capitalisation runs from
+`optengine backtest --universe`, where the operator names the files.
+
 The sidebar walks a numbered path — **Data → Currency → Method →
 Assumptions → Objective → Benchmark → Exposure → Frontier** — and each step
 surfaces what could make the next one wrong.

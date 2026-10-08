@@ -611,3 +611,34 @@ def test_broken_rules_are_a_message_beside_the_box_that_broke_them(
     _no_exception(solved_app)
     errors = [e.value for e in solved_app.error]
     assert any("do not describe a universe" in message for message in errors), errors
+
+
+def test_the_universe_tab_takes_no_path_to_a_file_on_the_server(solved_app):
+    """`streamlit run` listens on every interface by default.
+
+    A free-text "Rules file on disk" box let anyone who could reach the page
+    have the server read any file it could see, and the parse error quoted
+    what it found — a fake ``~/.aws/credentials`` came back with its key.
+    """
+    labels = [t.label for t in solved_app.text_input]
+    assert "Rules file on disk" not in labels
+
+
+def test_a_rules_document_naming_a_panel_file_is_refused_unread(solved_app, tmp_path):
+    """Typed or uploaded rules could point ``panels:`` at any path on the server.
+
+    The same file-read as the path box, one level down, and the pandas error
+    for a file that was not a panel quoted its first cell.
+    """
+    secret = tmp_path / "clients.csv"
+    secret.write_text("client,iban\nACME-SECRET-CLIENT,ES00-SECRET\n")
+    solved_app.session_state["universe_rules_text"] = (
+        "schema_version: 1\n"
+        f"panels:\n  adv: {{path: '{secret.as_posix()}'}}\n"
+        "rules:\n  - {kind: threshold, panel: adv, op: '>', value: 0}\n"
+    )
+    solved_app.run()
+    _no_exception(solved_app)
+    errors = [e.value for e in solved_app.error]
+    assert any("panels" in message for message in errors), errors
+    assert not any("SECRET" in message for message in errors), errors
