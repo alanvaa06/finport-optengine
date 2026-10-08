@@ -57,10 +57,11 @@ rescaling the rest. ``notes["n_ineligible_carried_forward"]`` counts it.
 stopped printing looks exactly like one on a long holiday until enough silence
 has passed, and only the caller knows how much is enough — so
 ``delisting_grace`` has no default and delisting is simply not diagnosed
-without one. When it is set, staleness is measured on ``returns`` up to **and
-including** the decision date and never past it, and the verdict is sticky: a
-name declared delisted stays out for the rest of the run rather than
-resurrecting on a late print.
+without one. When it is set, staleness is measured on ``returns`` strictly
+**before** the decision date — the rows the solve window ends on — because the
+book chosen on that date is held over it, and a halt on that very bar is news
+the decision did not have. The verdict is sticky: a name declared delisted
+stays out for the rest of the run rather than resurrecting on a late print.
 """
 
 from __future__ import annotations
@@ -72,7 +73,7 @@ import numpy as np
 import pandas as pd
 
 from optimization_engine.backtest.results import RunResult
-from optimization_engine.backtest.runner import resolve_universe_mask, run_backtest
+from optimization_engine.backtest.runner import _replay, resolve_universe_mask
 from optimization_engine.backtest.spec import BacktestSpec, RebalanceFrequency
 from optimization_engine.universe import Eligibility
 
@@ -84,9 +85,12 @@ class WalkForwardRun:
     Attributes:
         run: The replayed result, tagged out-of-sample.
         weights_history: Target weights by decision date — one row per
-            decision, not per trade, and a failed solve is a row like any
-            other: the book it carries forward, or cash when there is none
-            yet. With a trading cadence finer than the re-solve cadence the
+            decision, not per trade. The decision date is the first bar the
+            book is held over, and the window behind it ends the bar before,
+            which is why ``execution_lag=0`` is exact here and a lag of one
+            holds each book a bar later than it could. A failed solve is a
+            row like any other: the book it carries forward, or cash when
+            there is none yet. With a trading cadence finer than the re-solve cadence the
             book trades more often than this frame has rows, and
             ``run.rebalance_dates`` is the record of that.
         windows: One row per decision — window bounds, length, and status.
@@ -264,7 +268,10 @@ def walk_forward_run(
             restricted to the names eligible **as of the decision date**
             before ``solve`` is called, so the optimizer is never shown a name
             the mandate did not permit it to hold — and a name that becomes
-            eligible at ``t`` is absent from every solve before ``t``. The
+            eligible at ``t`` is absent from every solve before ``t``. With
+            no execution lag the book chosen at ``t`` is held over ``t``, so
+            a threshold or rank rule — which judges ``t`` on ``t``'s own
+            data — is read from the bar before; rolling rules already are. The
             same universe is handed to the replay, so calendar rebalances
             between re-solves respect it too, and ``run.meta.notes["universe"]``
             records the breadth at each decision.
@@ -273,18 +280,20 @@ def walk_forward_run(
             given; there is no default.
         delisting_grace: How many bars of silence make a name delisted, or
             ``None`` (the default) to not diagnose delisting at all. With
-            ``0``, a name that did not print on the decision date is gone;
-            with ``5``, a business week of silence is tolerated first.
-            Staleness is measured on ``returns`` up to and including the
-            decision date, never past it. A delisted name is dropped from the
+            ``0``, a name that did not print on the bar before the decision
+            is gone; with ``5``, a business week of silence is tolerated
+            first. Staleness is measured on ``returns`` strictly before the
+            decision date, like the solve window: the decision's book is held
+            over the decision date, so that bar's print — or its absence —
+            is not yet known. A delisted name is dropped from the
             solve window and its target forced to zero, which the replay
             executes as a sale at its last mark — see
             :func:`~optimization_engine.backtest.runner.run_backtest`. The
             verdict is sticky, and ``notes["delistings"]`` records the last
             print and the decision that liquidated it. A name that has not
-            printed *at all* by a decision is likewise not investable at it,
-            but it is not a delisting and not sticky: it enters on its first
-            print.
+            printed *at all* before a decision is likewise not investable at
+            it, but it is not a delisting and not sticky: it enters on the
+            first decision after its first print.
 
     Returns:
         The bundle. ``n_resolves`` counts optimizations, ``n_trade_dates``
@@ -323,8 +332,14 @@ def walk_forward_run(
 
     universe_mask: np.ndarray | None = None
     if universe is not None:
+        # Read exactly as the replay below will read it, lag included, so the
+        # optimizer is never shown a name the replay would then liquidate.
         universe_mask, _ = resolve_universe_mask(
-            universe, universe_policy, pd.DatetimeIndex(returns.index), list(returns.columns)
+            universe,
+            universe_policy,
+            pd.DatetimeIndex(returns.index),
+            list(returns.columns),
+            execution_lag=spec.execution_lag,
         )
     last_seen: np.ndarray | None = None
     grace = 0
@@ -347,9 +362,14 @@ def walk_forward_run(
         if universe_mask is not None:
             investable &= universe_mask[position]
         if last_seen is not None:
-            seen = last_seen[position]
+            # The book chosen here is held over ``position`` itself, so what
+            # the decision can know ends on the bar before — the same row the
+            # solve window ends on. Reading ``position`` would let a halt on
+            # this very bar sell the name at its last mark before anyone
+            # could have known it halted.
+            seen = last_seen[position - 1]
             never_printed = seen < 0
-            stale = (~never_printed) & ((position - seen) > grace)
+            stale = (~never_printed) & ((position - 1 - seen) > grace)
             for column_position in np.flatnonzero(stale & ~delisted_ever):
                 delistings[str(returns.columns[column_position])] = {
                     "last_print": pd.Timestamp(
@@ -451,7 +471,7 @@ def walk_forward_run(
     # The cost models see the whole history, not just the evaluated slice:
     # a decision made at the first evaluated date has years of returns behind
     # it, and pricing its impact off the slice alone would throw them away.
-    run = run_backtest(
+    run = _replay(
         evaluation,
         weights_history,
         spec,

@@ -214,8 +214,10 @@ def backtest_weights(
     Args:
         returns: Periodic asset returns.
         weights: Either one target vector held throughout, or a frame of
-            target weights indexed by the date they become effective (used by
-            the walk-forward runner).
+            target weights indexed by date. At ``execution_lag=0`` the date
+            is the first bar the target is held over, so it may use nothing
+            from that bar; see
+            :func:`~optimization_engine.backtest.runner.run_backtest`.
         frequency: How often the book is traded back to target.
         transaction_cost_bps: One-way cost in basis points of traded notional.
             25 bps on 100% turnover costs 25 bps of NAV.

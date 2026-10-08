@@ -2407,7 +2407,8 @@ with tab_backtest:
                 "Execution lag (periods)", min_value=0, max_value=10, value=0, step=1,
                 help=(
                     "Periods between choosing a target and trading it. At zero "
-                    "the book fills on a close it has not seen — the "
+                    "each rebalance trades at the close before its date "
+                    "and earns that date's return — the "
                     "conventional, optimistic assumption."
                 ),
             )

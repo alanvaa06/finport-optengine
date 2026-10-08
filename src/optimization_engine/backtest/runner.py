@@ -22,6 +22,16 @@ have. A decision taken on date ``t`` executes at ``t + execution_lag``, and
 the volatility that prices its impact is estimated on returns strictly
 before ``t``.
 
+**What a schedule's dates mean.** A target dated ``t`` is traded at the start
+of bar ``t + execution_lag`` — at the previous close — and earns that bar's
+return first. With the default lag of zero, then, the date is the first bar
+the target is *held over*, not the close it was decided on, and the target
+must have been built from data before ``t``. That is exactly how the
+walk-forward runner dates its schedule. A schedule stamped with the close
+that produced it — a signal computed on ``t``'s data and dated ``t`` — needs
+``execution_lag=1``; at zero it earns the very return it was computed from,
+and :func:`run_backtest` warns when it is handed a dated schedule that way.
+
 A target dated on a day the market was shut is traded on the next bar, not
 quietly deferred to the next calendar rebalance. Every such move is named in
 ``meta.notes`` — see :func:`_place_schedule_on_bars`.
@@ -41,6 +51,7 @@ inventing a rescaling here would silently overwrite the optimizer's sizing.
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import Any
 
 import numpy as np
@@ -186,6 +197,8 @@ def resolve_universe_mask(
     universe_policy: str | None,
     index: pd.DatetimeIndex,
     assets: list[str],
+    *,
+    execution_lag: int = 0,
 ) -> tuple[np.ndarray, list[str]]:
     """The eligibility in force on every bar, as a hard boolean array.
 
@@ -193,7 +206,10 @@ def resolve_universe_mask(
     weight vector can be multiplied by. Each bar reads the most recent
     evaluation at or before it, so a universe defined on a coarser calendar
     than the run — monthly reconstitutions against daily bars — never reaches
-    forward for the next one.
+    forward for the next one. With no execution lag a universe that reads its
+    own date's data — a threshold or a rank — is read strictly before each
+    bar instead, because the book chosen on that bar is held over it; see
+    :func:`~optimization_engine.universe.eligibility.point_in_time_mask`.
 
     Args:
         universe: The membership definition.
@@ -205,6 +221,9 @@ def resolve_universe_mask(
             warm up at all.
         index: The simulation's bars.
         assets: The return frame's columns, in order.
+        execution_lag: The run's lag, in bars. Defaults to ``0``, the
+            :class:`~optimization_engine.backtest.spec.BacktestSpec` default
+            and the reading that cannot leak.
 
     Returns:
         A ``(bars, assets)`` array of NumPy ``bool``, and the assets the
@@ -235,7 +254,9 @@ def resolve_universe_mask(
             ", ".join(unknown[:5]) + (" …" if len(unknown) > 5 else ""),
             universe_policy,
         )
-    mask = point_in_time_mask(universe, universe_policy, index, assets)
+    mask = point_in_time_mask(
+        universe, universe_policy, index, assets, execution_lag=execution_lag
+    )
     return mask.to_numpy(dtype=bool), unknown
 
 
@@ -258,8 +279,11 @@ def run_backtest(
         returns: Periodic asset returns, one column per asset. This is the
             evaluation window: every period here is replayed.
         weights: Either one target vector held throughout, or a frame of
-            target weights indexed by the date they become effective — which
-            is what the walk-forward runner produces.
+            target weights indexed by date. Each row is traded at the start
+            of the bar ``spec.execution_lag`` rows after its date and held
+            from that bar on; with the default lag of zero the date *is* the
+            first bar held, so the row may use nothing from that bar. This is
+            how the walk-forward runner dates its schedule.
         spec: The run description. Defaults to a monthly, costless,
             same-period-fill, in-sample replay.
         cost_model: Override the model built from ``spec.costs``. Useful for
@@ -299,8 +323,11 @@ def run_backtest(
             it was held, that zero is a sale at the decision's execution bar,
             priced like any other trade. See the module docstring for what
             liquidation means when the panel has fixed columns. Eligibility is
-            read as of the decision date and never later, so this cannot
-            introduce look-ahead. Weights are *not* renormalised: what the
+            read as of the decision date and never later — and, with no
+            execution lag, a threshold or rank verdict is read from the bar
+            before, since the book is held over the decision date and that
+            verdict reads the date's own data. Weights are *not*
+            renormalised: what the
             excluded names held becomes cash, and only the optimizer decides
             how a book is sized.
         universe_policy: How a *not evaluable* cell is read — ``"exclude"``,
@@ -322,11 +349,59 @@ def run_backtest(
         UniverseError: If the universe policy is unknown, or it is ``"raise"``
             and some name was not evaluable on some bar.
 
+    Warns:
+        UserWarning: When ``weights`` is a dated frame and the lag is zero.
+            Nothing about the run changes; the warning says what the dates
+            must mean for the result to be honest.
+    """
+    spec = spec or BacktestSpec()
+    if isinstance(weights, pd.DataFrame) and spec.execution_lag == 0:
+        # Only a warning: a schedule dated by its first holding bar is right
+        # at lag 0 and must not change. One dated by the close it was built
+        # on is look-ahead at lag 0, and the two look identical from here.
+        warnings.warn(
+            "A dated weight schedule is being replayed with execution_lag=0: "
+            "each row is held over the bar it is dated on, so it must use "
+            "nothing from that bar. A schedule dated by the close it was "
+            "computed on needs execution_lag=1.",
+            stacklevel=2,
+        )
+    return _replay(
+        returns,
+        weights,
+        spec,
+        cost_model=cost_model,
+        notes=notes,
+        context_returns=context_returns,
+        prices=prices,
+        volumes=volumes,
+        universe=universe,
+        universe_policy=universe_policy,
+    )
+
+
+def _replay(
+    returns: pd.DataFrame,
+    weights: pd.Series | pd.DataFrame,
+    spec: BacktestSpec,
+    *,
+    cost_model: CostModel | None = None,
+    notes: dict[str, Any] | None = None,
+    context_returns: pd.DataFrame | None = None,
+    prices: pd.DataFrame | None = None,
+    volumes: pd.DataFrame | None = None,
+    universe: Eligibility | None = None,
+    universe_policy: str | None = None,
+) -> RunResult:
+    """The replay behind :func:`run_backtest`, without its schedule warning.
+
+    The walk-forward runner calls this directly: it dates every target on the
+    first bar the book is held, from a window that ends the bar before, so a
+    zero lag is exact for it and the warning would only be noise.
     """
     if returns is None or returns.empty:
         raise ValueError("Cannot backtest on empty returns.")
 
-    spec = spec or BacktestSpec()
     assets = list(returns.columns)
     index = pd.DatetimeIndex(returns.index)
     schedule = _as_schedule(weights, assets, index[0])
@@ -384,7 +459,11 @@ def run_backtest(
     unknown_assets: list[str] = []
     if universe is not None:
         universe_mask, unknown_assets = resolve_universe_mask(
-            universe, universe_policy, index, assets
+            universe,
+            universe_policy,
+            index,
+            assets,
+            execution_lag=spec.execution_lag,
         )
     elif universe_policy is not None:
         _LOG.warning(

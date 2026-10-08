@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import json
 import sys
 import traceback
@@ -297,8 +298,10 @@ def _build_parser() -> argparse.ArgumentParser:
     backtest.add_argument(
         "--execution-lag", type=int, default=1, metavar="N",
         help="Periods between a decision and its fill. Defaults to 1 — a desk "
-             "does not trade on a close it has not seen. Pass 0 for the "
-             "conventional (optimistic) same-period fill.",
+             "does not trade on a close it has not seen. Pass 0 to hold each "
+             "book from its decision date: the walk-forward decides from the "
+             "bar before, so 0 fills at the very close it decided on (the "
+             "conventional, optimistic fill).",
     )
     backtest.add_argument(
         "--holdout", metavar="YYYY-MM-DD",
@@ -336,8 +339,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="YAML/JSON rules file defining point-in-time membership: which "
              "names were investable, and when. Without one the universe is "
              "'every column of the panel, from the first bar', which is "
-             "survivorship bias and look-ahead in the same frame. See "
-             "optimization_engine.universe.rules for the schema.",
+             "survivorship bias and look-ahead in the same frame. With it "
+             "the walk-forward runs on the unaligned panel, so a late listing "
+             "and a delisting stay in it; only the initial solve is aligned. "
+             "See optimization_engine.universe.rules for the schema.",
     )
     backtest.add_argument(
         "--universe-policy", default="exclude",
@@ -357,7 +362,8 @@ def _build_parser() -> argparse.ArgumentParser:
              "--universe and opt-in on its own: a screen says what the "
              "mandate permits, this says what still trades. Omitted, "
              "delisting is not diagnosed at all and a name that stopped "
-             "printing is simply held.",
+             "printing is simply held. Given, the walk-forward runs on the "
+             "unaligned panel, as with --universe.",
     )
     backtest.add_argument(
         "--output", help="Optional Excel path for the tearsheet frames."
@@ -527,7 +533,12 @@ def _load_universe_for(args: argparse.Namespace, returns, prices):
     print(rules.describe())
 
     policy = getattr(args, "universe_policy", "exclude")
-    cells, bars, names = count_unresolved(universe, returns.index, list(returns.columns))
+    cells, bars, names = count_unresolved(
+        universe,
+        returns.index,
+        list(returns.columns),
+        execution_lag=getattr(args, "execution_lag", None),
+    )
     if cells:
         # Unconditionally on stderr, like the alignment log and for the same
         # reason: the library refuses to pick a collapse policy, this command
@@ -1182,6 +1193,54 @@ class _Inputs:
     #: The ingest the panel came from, for the payload's resolved window;
     #: ``None`` for ``--prices``, ``--sample`` and ``--yahoo``.
     ingest: object = None
+    #: The panel a point-in-time backtest walks over — every date, with only
+    #: the gaps *inside* a name's life aligned away — and its returns. Built
+    #: only when ``--universe`` or ``--delisting-grace`` asks for it; see
+    #: :func:`_point_in_time_panel`.
+    pit_prices: pd.DataFrame | None = None
+    pit_returns: pd.DataFrame | None = None
+
+
+def _point_in_time_panel(prices: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+    """The panel a universe or a delisting rule has to see: listings and delistings left in.
+
+    ``align_panel(method="common")`` keeps only the dates every name printed
+    on, which is [last listing, first delisting]. That is the right sample for
+    one covariance, and the wrong one for a backtest whose screen exists to
+    say when a name arrived and whose delisting rule exists to sell one that
+    stopped: the screen never sees the late name arrive, and the run ends on
+    the day the first name delists, so the rule can never fire.
+
+    Here the leading and trailing runs of missing prices are kept — they are
+    the listing and delisting the walk-forward reads point in time — and only
+    a gap *inside* a name's life is aligned away, by dropping that date as the
+    common alignment would. The move across such a gap is then booked as one
+    period, exactly as on the aligned panel.
+
+    Args:
+        prices: The raw price panel, after currency conversion.
+
+    Returns:
+        ``(prices, returns, sentence)`` — the panel, its returns (missing
+        before a name's first price and after its last), and one sentence for
+        the alignment log saying what the walk-forward runs on.
+    """
+    out = prices.sort_index()
+    out = out[~out.index.duplicated(keep="last")]
+    printed = out.notna()
+    alive = printed.cummax() & printed[::-1].cummax()[::-1]
+    interior = (alive & ~printed).any(axis=1)
+    n_interior = int(interior.sum())
+    out = out.loc[~interior]
+    returns = prices_to_returns(out)
+    sentence = (
+        f"The walk-forward runs on the unaligned panel, {len(out)} date(s), "
+        "because --universe or --delisting-grace reads listings and "
+        "delistings point in time; only interior gaps are aligned away "
+        f"({n_interior} date(s) on which a listed name had no price). The "
+        "alignment above applies to the initial solve."
+    )
+    return out, returns, sentence
 
 
 def _fail(args: argparse.Namespace, message: str, code: int = 2) -> int:
@@ -1220,6 +1279,12 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
     listed three years after the rest truncates the sample for every other
     asset, and a covariance estimated on three years of a twenty-year
     panel is not the estimate the config asked for.
+
+    The common window is wrong for one thing: a backtest that reads
+    listings and delistings point in time. With ``--universe`` or
+    ``--delisting-grace`` the inputs also carry the panel before that cut,
+    with only interior gaps aligned away (:func:`_point_in_time_panel`), and
+    ``backtest`` walks forward on it.
 
     Returns:
         The inputs — including the alignment log — or an exit code when
@@ -1355,6 +1420,13 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
     # hide the very gaps the report exists to name.
     quality = analyze_prices(prices, periods_per_year=config.periods_per_year)
 
+    # A point-in-time backtest needs the panel the common alignment below is
+    # about to cut. Built from the same raw prices, before that cut.
+    pit_prices = pit_returns = None
+    pit_sentence = None
+    if getattr(args, "universe", None) or getattr(args, "delisting_grace", None) is not None:
+        pit_prices, pit_returns, pit_sentence = _point_in_time_panel(prices)
+
     # `method="common"` keeps the dates on which every asset is present.
     # The alternatives were rejected deliberately: `"ffill"` fabricates
     # prices, and a fabricated flat period understates volatility and
@@ -1384,6 +1456,8 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
             f"Dropped {n_rows - len(returns)} period(s) whose return could "
             "not be computed from the aligned prices."
         )
+    if pit_sentence is not None:
+        alignment.append(pit_sentence)
     # Unconditionally on stderr: stdout is the parsed stream under
     # `--json`, and a truncated sample is not an advanced-mode detail.
     for action in alignment:
@@ -1407,6 +1481,8 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
         alignment=alignment,
         data_source=data_source,
         ingest=ingested,
+        pit_prices=pit_prices,
+        pit_returns=pit_returns,
     )
 
 
@@ -1472,9 +1548,15 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         inputs.config, inputs.prices, inputs.returns, inputs.volumes
     )
     alignment = inputs.alignment
+    # With a universe or a delisting rule the walk-forward runs on the
+    # point-in-time panel; the initial solve below still needs the aligned
+    # one, because a covariance cannot be estimated across missing prices.
+    point_in_time = inputs.pit_returns is not None
+    walk_returns = inputs.pit_returns if inputs.pit_returns is not None else returns
+    walk_prices = inputs.pit_prices if inputs.pit_prices is not None else prices
     if _load_stress_into(config, args) != 0:
         return 2
-    universe = _load_universe_for(args, returns, prices)
+    universe = _load_universe_for(args, walk_returns, walk_prices)
     if isinstance(universe, int):
         return universe
 
@@ -1511,11 +1593,14 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         )
 
     evaluation = returns
+    walk_evaluation = walk_returns
     if args.holdout:
         evaluation = gate_returns(returns, args.holdout)
+        walk_evaluation = gate_returns(walk_returns, args.holdout)
         print(
-            f"  Holdout: walk-forward sees {len(evaluation)} of {len(returns)} "
-            f"observations; everything after {args.holdout} is withheld."
+            f"  Holdout: walk-forward sees {len(walk_evaluation)} of "
+            f"{len(walk_returns)} observations; everything after "
+            f"{args.holdout} is withheld."
         )
 
     try:
@@ -1527,13 +1612,19 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         return _fail(args, f"The initial solve was refused: {exc}")
     except SolverFailure as exc:
         return _fail(args, f"The initial solve failed: {exc}")
+    if point_in_time:
+        # The walk-forward, the sweep and the tearsheet all read the run's
+        # ``returns``. Every window is re-solved from its own rows, so handing
+        # them the point-in-time panel changes what they walk over and nothing
+        # about the initial solve.
+        run = dataclasses.replace(run, returns=walk_evaluation)
     try:
         walk = run.walk_forward_run(
             lookback=args.lookback,
             rebalance_every=args.rebalance_every,
             spec=spec,
             expanding=args.expanding,
-            prices=prices,
+            prices=walk_prices,
             volumes=volumes,
             universe=universe,
             # Only when there is a universe to read it under. Passed with no
@@ -1555,6 +1646,15 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
     print(f"  {walk.describe()}")
     if walk.n_failures:
         print(f"  {walk.n_failures} solve(s) failed; the previous book was carried forward.")
+        if point_in_time and any("missing values" in reason for reason in walk.failures):
+            print(
+                "  On the point-in-time panel a solve fails when a name it is "
+                "shown has missing returns in its window: a recent listing, or "
+                "one that stopped printing. To admit only names with a full "
+                "window, add a rule {kind: rolling, panel: returns, window: "
+                f"{args.lookback}, agg: count, op: '>=', value: {args.lookback}}}"
+                "; for names that stopped printing, set --delisting-grace."
+            )
 
     sweep_results = None
     overfitting = None
@@ -1576,7 +1676,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
             rebalance_every=args.rebalance_every,
             spec=spec,
             expanding=args.expanding,
-            prices=prices,
+            prices=walk_prices,
             volumes=volumes,
             universe=universe,
             universe_policy=args.universe_policy if universe is not None else None,
@@ -1619,7 +1719,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         locked = walk.weights_history.iloc[-1]
         holdout_spec = spec.with_(is_out_of_sample=True, name=f"{spec.name}-holdout")
         outcome = final_holdout_run(
-            returns,
+            walk_returns,
             args.holdout,
             # The held-out replay is a real run and must be priced the same
             # way: without the volume panel it would silently fall back to the
@@ -1629,7 +1729,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
                 segment,
                 locked,
                 holdout_spec,
-                prices=prices.reindex(segment.index) if volumes is not None else None,
+                prices=walk_prices.reindex(segment.index) if volumes is not None else None,
                 volumes=(
                     volumes.reindex(index=segment.index, columns=segment.columns)
                     if volumes is not None

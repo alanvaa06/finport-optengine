@@ -506,9 +506,12 @@ Three things that in-sample constant-weight replays quietly assume away:
 * **Drift and rebalancing.** Positions grow with their own return between
   trades; pulling them back costs money. `run_backtest()` reports held weights
   (not targets), per-trade costs, turnover, and NAV.
-* **Execution.** `execution_lag` separates the date a target is chosen from the
-  date it is traded. At zero — the conventional default — the book fills on a
-  close it has not seen.
+* **Execution.** `execution_lag` separates the date a target is stamped with
+  from the bar it is first held over. At zero — the conventional default — a
+  target dated `t` is traded at the close before `t` and earns `t`'s return, so
+  it must be built from data before `t`, as the walk-forward builds it. A
+  schedule dated by the close that produced it needs `execution_lag=1`;
+  `run_backtest` warns when a dated schedule meets a zero lag.
 * **Cost that scales.** `CostSpec` splits commission (a broker problem) from
   slippage and market impact (a size problem). With `impact_coefficient` set,
   cost follows the square-root law `eta · sigma · sqrt(q / participation)`, so

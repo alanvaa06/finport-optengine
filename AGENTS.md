@@ -95,6 +95,23 @@ fatal — a solver that crashed is not a mandate with no solution.
 not stress testing; the old import path works for one release and warns.
 Stress scenarios live in `stress.py`.
 
+**A threshold or rank universe acts one bar later at `execution_lag=0`.**
+Those rules judge date `t` on `t`'s own data, and with no lag the book chosen
+on `t` is held over `t`, so the runner reads them from the bar before
+(`Eligibility.same_bar` says which universes this applies to). Rolling rules,
+membership frames and any run with a lag of one or more read as before.
+`delisting_grace` likewise measures silence on the bars *before* the
+decision: with `0`, a name is dropped by the first decision after the bar it
+went quiet on, not by a decision on that bar.
+
+**At `execution_lag=0` a schedule's date is the first bar its target is
+held over.** The target is traded at the previous close and earns that
+date's return, so it must use nothing from that date. That is how
+`walk_forward_run` dates its schedule; a signal computed on `t`'s close and
+stamped `t` needs `execution_lag=1`. `run_backtest` (and `backtest_weights`)
+now raise a `UserWarning` when handed a dated frame at lag 0; results do not
+change.
+
 ## Where things live
 
 | You want | Import from `optimization_engine` |
