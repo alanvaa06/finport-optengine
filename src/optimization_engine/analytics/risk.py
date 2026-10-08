@@ -259,8 +259,14 @@ def log_wealth(returns: pd.Series | pd.DataFrame) -> pd.Series | pd.DataFrame:
 def drawdown_series(returns: pd.Series) -> pd.Series:
     """Drawdown from the running peak, as a negative fraction.
 
-    Computed as ``expm1(log_wealth − cummax(log_wealth))`` so that the peak
-    ratio is evaluated without ever materializing the wealth level itself.
+    Computed as ``expm1(log_wealth − peak)`` so that the peak ratio is
+    evaluated without ever materializing the wealth level itself.
+
+    The running peak starts at the capital invested — log-wealth zero — not
+    at the wealth after the first return. Starting it at the first close
+    used to make a loss on the first period invisible: ``[-10%, -10%, +5%,
+    +1%]`` reported a -10% maximum drawdown when the investor was 19% down.
+    The capital before the first return is a peak like any other.
 
     Args:
         returns: A return stream.
@@ -270,7 +276,8 @@ def drawdown_series(returns: pd.Series) -> pd.Series:
         below one — ``-0.20`` is a 20% drawdown.
     """
     growth = log_wealth(returns)
-    return pd.Series(np.expm1(growth - growth.cummax()), index=returns.index)
+    peak = np.maximum(growth.cummax(), 0.0)
+    return pd.Series(np.expm1(growth - peak), index=returns.index)
 
 
 def drawdown_table(returns: pd.Series, top: int = 5) -> pd.DataFrame:
@@ -281,6 +288,11 @@ def drawdown_table(returns: pd.Series, top: int = 5) -> pd.DataFrame:
     peak, trough, recovery, depth, and both the decline and recovery lengths.
     An episode still underwater at the end of the sample has ``NaT`` recovery
     and is flagged.
+
+    An episode that begins with the first return has the starting capital as
+    its peak, which has no date in the index: its ``peak_date`` is ``NaT``,
+    its ``peak_wealth`` is 1.0, and its lengths count from inception — the
+    first period is one period of decline, not zero.
 
     Args:
         returns: A return stream.
@@ -304,35 +316,33 @@ def drawdown_table(returns: pd.Series, top: int = 5) -> pd.DataFrame:
             ]
         )
 
-    episodes: list[dict[str, object]] = []
-    start: pd.Timestamp | None = None
-    for i, (date, is_under) in enumerate(underwater.items()):
+    # Episodes by position. A start of -1 is the starting capital, the peak
+    # before the first return.
+    episodes: list[tuple[int, int | None]] = []
+    start: int | None = None
+    for i, is_under in enumerate(underwater.to_numpy()):
         if is_under and start is None:
-            start = underwater.index[i - 1] if i > 0 else date
+            start = i - 1
         elif not is_under and start is not None:
-            episodes.append({"start": start, "end": date})
+            episodes.append((start, i))
             start = None
     if start is not None:
-        episodes.append({"start": start, "end": None})
+        episodes.append((start, None))
 
+    idx = returns.index
     rows: list[dict[str, object]] = []
-    for ep in episodes:
-        s = ep["start"]
-        e = ep["end"]
-        window = dd.loc[s:] if e is None else dd.loc[s:e]
+    for s_pos, e_pos in episodes:
+        window = dd.iloc[max(s_pos, 0) : (None if e_pos is None else e_pos + 1)]
         if window.empty:
             continue
         trough_date = window.idxmin()
         depth = float(window.min())
-        idx = returns.index
-        s_pos = idx.get_loc(s)
         t_pos = idx.get_loc(trough_date)
-        e_pos = idx.get_loc(e) if e is not None else None
         rows.append(
             {
-                "peak_date": s,
+                "peak_date": idx[s_pos] if s_pos >= 0 else pd.NaT,
                 "trough_date": trough_date,
-                "recovery_date": e if e is not None else pd.NaT,
+                "recovery_date": idx[e_pos] if e_pos is not None else pd.NaT,
                 "max_drawdown": depth,
                 "decline_periods": int(t_pos - s_pos),
                 "recovery_periods": (
@@ -341,8 +351,8 @@ def drawdown_table(returns: pd.Series, top: int = 5) -> pd.DataFrame:
                 "total_periods": (
                     int(e_pos - s_pos) if e_pos is not None else int(len(idx) - 1 - s_pos)
                 ),
-                "recovered": e is not None,
-                "peak_wealth": float(peak.loc[s]),
+                "recovered": e_pos is not None,
+                "peak_wealth": float(peak.iloc[s_pos]) if s_pos >= 0 else 1.0,
             }
         )
 

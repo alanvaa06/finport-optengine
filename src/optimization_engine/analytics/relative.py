@@ -497,6 +497,12 @@ def relative_drawdown(
     returns as if it were a return — but the drawdown of the ratio of the two
     wealth curves, which is what "behind by 8% since 2022" means.
 
+    The relative high-water mark starts at 1 — level with the benchmark at
+    inception — for the reason
+    :func:`~optimization_engine.analytics.risk.drawdown_series` starts its
+    peak at the capital invested: a portfolio that falls behind on the first
+    period is behind from that period on.
+
     Args:
         r: Portfolio returns — a stream, or a frame of them.
         rb: Benchmark returns, over the same dates.
@@ -509,7 +515,7 @@ def relative_drawdown(
     frame, bench = _aligned(r, rb)
     bench_wealth = (1.0 + bench).cumprod()
     ratio = (1.0 + frame).cumprod().div(bench_wealth, axis=0)
-    return ratio / ratio.cummax() - 1.0
+    return ratio / ratio.cummax().clip(lower=1.0) - 1.0
 
 
 def relative_summary_extras(

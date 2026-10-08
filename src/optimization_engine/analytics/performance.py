@@ -26,11 +26,13 @@ def drawdown(return_series: pd.Series, starting_wealth: float = 1000.0) -> pd.Da
 
     The drawdown column comes from :func:`drawdown_series`, which works in
     log space, so it stays exact even where the wealth level itself would
-    overflow.
+    overflow. The peak starts at ``starting_wealth`` — the capital invested
+    is the first high-water mark — so the three columns agree.
 
     Args:
         return_series: A return stream.
-        starting_wealth: Value at the first period, for the wealth column.
+        starting_wealth: The capital invested before the first return, for
+            the wealth and peak columns.
 
     Returns:
         A frame indexed like the input with ``wealth``, ``peak`` and
@@ -40,7 +42,7 @@ def drawdown(return_series: pd.Series, starting_wealth: float = 1000.0) -> pd.Da
     return pd.DataFrame(
         {
             "Wealth": wealth,
-            "Peaks": wealth.cummax(),
+            "Peaks": wealth.cummax().clip(lower=starting_wealth),
             "Drawdown": drawdown_series(return_series),
         }
     )

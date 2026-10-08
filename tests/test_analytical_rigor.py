@@ -747,7 +747,8 @@ def test_wealth_accumulation_is_overflow_proof():
     idx = pd.date_range("2000-01-01", periods=3000, freq="D")
     normal = pd.Series(np.linspace(-0.01, 0.01, 3000), index=idx)
     reference = (1 + normal).cumprod()
-    reference_dd = reference / reference.cummax() - 1
+    # The peak includes the starting capital: this series opens with a loss.
+    reference_dd = reference / reference.cummax().clip(lower=1.0) - 1
     np.testing.assert_allclose(
         drawdown_series(normal).values, reference_dd.values, atol=1e-12
     )
