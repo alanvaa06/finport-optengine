@@ -1183,6 +1183,32 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
             )
         prices = prices[common]
 
+    # Before anything is annualized — the quality report included. A config
+    # that never set periods_per_year left 252 in place for monthly data, so
+    # the factor comes from the ingest interval or the dates instead, and a
+    # value the config does state is checked against them.
+    from optimization_engine.config import stated_keys
+    from optimization_engine.data.frequency import (
+        FrequencyMismatchError,
+        resolve_periods_per_year,
+    )
+
+    try:
+        config.periods_per_year, annualization = resolve_periods_per_year(
+            prices.index,
+            stated=(
+                config.periods_per_year
+                if "periods_per_year" in stated_keys(args.config)
+                else None
+            ),
+            interval=args.ingest_interval if ingested is not None else None,
+            default=config.periods_per_year,
+        )
+    except FrequencyMismatchError as exc:
+        return _fail(args, f"Annualization error: {exc}")
+    if annualization:
+        print(f"  Annualization: {annualization}", file=sys.stderr)
+
     # Quality is read off the *raw* panel on purpose: aligning first would
     # hide the very gaps the report exists to name.
     quality = analyze_prices(prices, periods_per_year=config.periods_per_year)

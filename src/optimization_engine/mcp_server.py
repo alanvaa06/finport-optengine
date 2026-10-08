@@ -101,7 +101,10 @@ mcp, ToolError = _build()
 
 
 def _panel(
-    sample: bool, prices_path: str | None
+    sample: bool,
+    prices_path: str | None,
+    config: Any = None,
+    config_path: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
     """Resolve a price panel, its returns, and how the two were aligned.
 
@@ -121,6 +124,11 @@ def _panel(
     holds and differencing them in one place keeps the two from being
     confused. Handing this a returns file silently builds a portfolio on
     second differences, so the parameter is named for what it wants.
+
+    Given the mandate, it also settles ``config.periods_per_year`` from the
+    dates, as the CLI does — see
+    :func:`~optimization_engine.data.frequency.resolve_periods_per_year` —
+    so a monthly file is not annualized on the default 252.
     """
     from optimization_engine.data.loader import load_prices, prices_to_returns, sample_dataset
     from optimization_engine.data.quality import align_panel
@@ -146,6 +154,8 @@ def _panel(
             "No data given. Pass sample=True for the built-in panel, or "
             "prices_path pointing at a CSV, Excel or Parquet file of prices."
         )
+    if config is not None:
+        _annualize(config, config_path, prices.index)
     # `method="common"` is the CLI's choice, for the CLI's reasons — and
     # the two surfaces must not disagree about what the same file means.
     # See `cli._prepare_inputs`, including the note on why an interior gap
@@ -161,6 +171,25 @@ def _panel(
             "not be computed from the aligned prices."
         )
     return aligned, returns, actions
+
+
+def _annualize(config: Any, config_path: str | None, index: pd.Index) -> None:
+    """Set the annualization factor from the dates, refusing a contradiction."""
+    from optimization_engine.config import stated_keys
+    from optimization_engine.data.frequency import (
+        FrequencyMismatchError,
+        resolve_periods_per_year,
+    )
+
+    stated = None
+    if config_path and "periods_per_year" in stated_keys(config_path):
+        stated = config.periods_per_year
+    try:
+        config.periods_per_year, _ = resolve_periods_per_year(
+            index, stated=stated, default=config.periods_per_year
+        )
+    except FrequencyMismatchError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 def _config(config_path: str | None, optimizer: str | None) -> Any:
@@ -284,7 +313,7 @@ def check_mandate(
     from optimization_engine.optimizers.feasibility import analyze_feasibility
 
     config = _config(config_path, optimizer)
-    prices, returns, alignment = _panel(sample, prices_path)
+    prices, returns, alignment = _panel(sample, prices_path, config, config_path)
 
     quality = analyze_prices(prices, periods_per_year=config.periods_per_year)
     cov = covariance_from_config(returns, config)
@@ -343,7 +372,7 @@ def optimize(
     from optimization_engine.optimizers.feasibility import InfeasibleConstraintsError
 
     config = _config(config_path, optimizer)
-    _, returns, alignment = _panel(sample, prices_path)
+    _, returns, alignment = _panel(sample, prices_path, config, config_path)
     try:
         run = run_engine(returns, config, raise_on_infeasible=True)
     except InfeasibleConstraintsError as exc:
@@ -407,7 +436,7 @@ def backtest(
     from optimization_engine.optimizers._cvxpy_helpers import SolverFailure
 
     config = _config(config_path, optimizer)
-    _, returns, alignment = _panel(sample, prices_path)
+    _, returns, alignment = _panel(sample, prices_path, config, config_path)
     spec = BacktestSpec(
         costs=CostSpec(commission_bps=commission_bps, slippage_bps=slippage_bps),
         periods_per_year=config.periods_per_year,

@@ -186,15 +186,17 @@ def test_an_infeasible_mandate_fails_with_its_report(tmp_path):
 
 def test_backtest_is_shaped_by_the_config_it_is_handed(tmp_path):
     daily = call("backtest", {"sample": True, "optimizer": "risk_parity"})
-    monthly_config = tmp_path / "monthly.yaml"
-    monthly_config.write_text("periods_per_year: 12\noptimizer: risk_parity\n")
-    monthly = call(
+    calendar_config = tmp_path / "calendar.yaml"
+    # A basis the daily dates allow (seven-day markets): a monthly 12 on this
+    # panel is now refused as a contradiction rather than simulated.
+    calendar_config.write_text("periods_per_year: 365\noptimizer: risk_parity\n")
+    calendar = call(
         "backtest",
-        {"config_path": str(monthly_config), "sample": True, "lookback": 504, "rebalance_every": 63},
+        {"config_path": str(calendar_config), "sample": True, "lookback": 504, "rebalance_every": 63},
     )
     # The spec hash covers the annualization basis and the trading cadence;
-    # a monthly config used to be simulated as daily, so the two agreed.
-    assert daily["spec_hash"] != monthly["spec_hash"]
+    # the config's basis used to be ignored here, so the two agreed.
+    assert daily["spec_hash"] != calendar["spec_hash"]
     assert daily["window"]["n_periods"] > 0
 
 
@@ -231,3 +233,20 @@ def test_every_payload_carries_the_alignment_log(tmp_path):
 def test_a_complete_panel_reports_an_empty_alignment_log():
     """Present and empty, so a client can test the value rather than the key."""
     assert call("check_mandate", {"sample": True})["alignment"] == []
+
+
+def test_a_monthly_file_is_annualized_on_twelve_and_a_contradiction_refused(tmp_path):
+    """The CLI's rule, over the protocol: the dates decide, a contradiction fails."""
+    from optimization_engine.data.loader import sample_dataset
+
+    daily = sample_dataset(n_periods=252 * 10, seed=1)[["US_Equity", "Gold"]]
+    csv = tmp_path / "monthly.csv"
+    daily.resample("ME").last().to_csv(csv, index_label="date")
+
+    solved = call("optimize", {"prices_path": str(csv), "optimizer": "min_variance"})
+    assert solved["metrics"]["expected_volatility"] < 0.15
+
+    stated = tmp_path / "daily.yaml"
+    stated.write_text("periods_per_year: 252\noptimizer: min_variance\n")
+    message = failure("optimize", {"prices_path": str(csv), "config_path": str(stated)})
+    assert "periods_per_year: 12" in message

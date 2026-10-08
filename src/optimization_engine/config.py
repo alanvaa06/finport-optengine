@@ -513,15 +513,39 @@ def load_config(path: str | Path) -> EngineConfig:
         LayerConfigurationError: If a constraint layer is malformed.
         BenchmarkError: If the benchmark block is malformed.
     """
+    return EngineConfig.from_dict(_read_mapping(path))
+
+
+def stated_keys(path: str | Path) -> frozenset[str]:
+    """The top-level keys a config file actually sets.
+
+    :meth:`EngineConfig.from_dict` fills every key the file leaves out with
+    its default, so the loaded config cannot tell ``periods_per_year: 252``
+    written by the author from the 252 nobody chose. The difference matters
+    where a default may be replaced by what the data says and a stated value
+    may not.
+
+    Args:
+        path: The YAML or JSON file :func:`load_config` would read.
+
+    Returns:
+        The keys present in the file's top-level mapping.
+
+    Raises:
+        ValueError: If the extension is neither YAML nor JSON.
+        FileNotFoundError: If the path does not exist.
+    """
+    return frozenset(_read_mapping(path) or {})
+
+
+def _read_mapping(path: str | Path) -> dict[str, Any]:
     p = Path(path)
     text = p.read_text(encoding="utf-8")
     if p.suffix.lower() in {".yaml", ".yml"}:
-        data = yaml.safe_load(text) or {}
-    elif p.suffix.lower() == ".json":
-        data = json.loads(text)
-    else:
-        raise ValueError(f"Unsupported config extension: {p.suffix}")
-    return EngineConfig.from_dict(data)
+        return yaml.safe_load(text) or {}
+    if p.suffix.lower() == ".json":
+        return json.loads(text)
+    raise ValueError(f"Unsupported config extension: {p.suffix}")
 
 
 def save_config(config: EngineConfig, path: str | Path) -> None:
