@@ -47,6 +47,7 @@ from optimization_engine.data.covariance import (
     covariance_from_config,
 )
 from optimization_engine.frontier import FrontierResult, efficient_frontier
+from optimization_engine.optimizers import ConfigurationError
 from optimization_engine.optimizers._cvxpy_helpers import SolverFailure
 from optimization_engine.optimizers.base import OptimizationResult
 from optimization_engine.optimizers.diagnostics import (
@@ -71,6 +72,12 @@ from optimization_engine.stress import (
     stress_test,
 )
 from optimization_engine.universe import Eligibility
+
+#: Pre-solve findings that ``strict_mandate`` turns from a warning into a
+#: refusal: limits written against assets the panel does not hold.
+_STRAY_MANDATE_CODES = frozenset(
+    {"bounds_outside_universe", "layer_assets_outside_universe"}
+)
 
 
 def apply_fx_conversion(
@@ -1077,6 +1084,10 @@ def run_engine(
             constraints cannot be satisfied.
         StressError: When ``run_stress`` is set and a configured shock names an
             asset outside the panel, which is the same defect as a view on one.
+        ConfigurationError: When ``config.strict_mandate`` is set and a bound
+            or a layer assignment names an asset the panel does not hold. Found
+            by the pre-solve analysis, so not checked under
+            ``check_feasibility=False``.
         MandateViolationError: When ``config.strict_mandate`` is set and the
             solved book breaches the mandate past tolerance. Unlike the other
             two this is raised *after* a successful solve — the answer arrived
@@ -1141,6 +1152,19 @@ def run_engine(
             expected_returns=effective_expected_returns(config, cov, expected_returns),
             cov_matrix=cov,
         )
+        # A bound or layer assignment on an asset the panel does not hold is a
+        # warning by default — it constrains nothing, so the mandate is still
+        # solvable. Under strict_mandate it is refused: the author believes the
+        # limit binds, and the usual cause is a misspelt name. Tied to this
+        # analysis rather than done unconditionally because a walk-forward
+        # window skips it, and a screened universe narrowing for a window is not
+        # a misspelling.
+        stray = [i.message for i in feasibility.issues if i.code in _STRAY_MANDATE_CODES]
+        if stray and getattr(config, "strict_mandate", False):
+            raise ConfigurationError(
+                "strict_mandate refuses a mandate that names assets the panel does "
+                f"not hold: {'; '.join(stray)}. Fix the names, or drop the limits."
+            )
         if raise_on_infeasible and not feasibility.is_feasible:
             raise InfeasibleConstraintsError(feasibility)
 

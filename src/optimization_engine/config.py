@@ -9,10 +9,12 @@ mutated programmatically, or built from a UI.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+import numpy as np
 import yaml
 
 from optimization_engine.benchmark import BenchmarkSpec
@@ -127,6 +129,43 @@ _OPTIMIZER_KEYS = frozenset(OptimizerSpec.__dataclass_fields__)
 _EXPECTED_RETURN_METHOD_ALIASES: dict[str, str] = {"historical_mean": "mean"}
 
 
+#: The switches on :class:`EngineConfig`, read by :func:`_as_bool` rather than
+#: by ``bool()``.
+_BOOLEAN_KEYS = ("long_only", "fully_invested", "strict_mandate", "denoise")
+
+
+def _as_bool(value: Any, key: str) -> bool:
+    """A config switch, read strictly: a real boolean, or the words true and false.
+
+    ``bool()`` is the wrong reader for a value that came from a file. It turns
+    the JSON string ``"false"`` into ``True`` — so a file that quoted its
+    booleans switched every one of them on, ``long_only`` included — and an
+    empty YAML value into ``False``. YAML and JSON both have real booleans; the
+    two words are accepted, in any case, for the file that quoted them, and so
+    are ``0`` and ``1``. Anything else is a question with no safe answer.
+
+    Args:
+        value: The raw value.
+        key: The field it was read for, named in the error.
+
+    Returns:
+        The boolean.
+
+    Raises:
+        ConfigurationError: If ``value`` is anything else — ``"no"``, ``2``,
+            ``None``.
+    """
+    from optimization_engine.optimizers import ConfigurationError
+
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+        return value.strip().lower() == "true"
+    raise ConfigurationError(f"{key} must be true or false; got {value!r}.")
+
+
 def expected_return_method_for_estimator(method: str) -> str:
     """Translate a config's expected-return method into an estimator name.
 
@@ -170,12 +209,17 @@ class EngineConfig:
             maps assets to buckets and caps each bucket, either as a share of
             the whole book or as a share of its parent layer's bucket. See
             :mod:`optimization_engine.constraints`.
-        periods_per_year: Number of return observations per year.
+        periods_per_year: Number of return observations per year. Must be
+            positive: it annualizes the covariance, and zero made it the zero
+            matrix — which then solved to an "optimal" equal-weight book with
+            no risk at all.
         covariance_method: ``sample``, ``ledoit_wolf``, ``oas``,
             ``shrink`` (an alias for ``ledoit_wolf``),
             ``ewma``, ``semi``, or ``denoised`` (sample covariance filtered
             through the Marchenko-Pastur eigenvalue cutoff).
-        ewma_lambda: Decay used when ``covariance_method == "ewma"``.
+        ewma_lambda: Decay used when ``covariance_method == "ewma"``. Strictly
+            between 0 and 1, and checked whatever the method, since a value
+            outside that interval cannot mean anything.
         denoise: Apply the Marchenko-Pastur eigenvalue filter to the
             covariance estimate (López de Prado, 2020). Composable with any
             estimator; implied by ``covariance_method="denoised"``.
@@ -237,7 +281,13 @@ class EngineConfig:
             weightings — which can return a book their mandate does not permit;
             a turnover budget or a tracking-error cap is dropped by the
             projection entirely, and this is what turns that from a warning
-            into a stop.
+            into a stop. It also refuses, before the solve, a bound or a layer
+            assignment naming an asset the panel does not hold — otherwise a
+            warning — because a limit the author believes is binding and that
+            constrains nothing is a mandate breach nobody can see. That check
+            rides on the pre-solve analysis, so ``run_engine(...,
+            check_feasibility=False)`` — the walk-forward's per-window solve,
+            where a screened universe legitimately narrows — skips it.
         stress: Named one-period shock scenarios for the pre-trade stress
             report — see :mod:`optimization_engine.stress`. Applied by
             ``run_engine(..., run_stress=True)`` and by
@@ -279,23 +329,54 @@ class EngineConfig:
     stress: tuple[Shock, ...] = ()
 
     def __post_init__(self) -> None:
-        """Coerce the constraint layers and the stress scenarios into canonical form.
+        """Coerce the nested blocks into canonical form, and refuse impossible values.
 
         A config loaded from YAML has mappings where one built in memory has
-        :class:`~optimization_engine.constraints.ConstraintLayer` and
-        :class:`~optimization_engine.stress.Shock` objects; after this they
-        behave identically. It runs on direct construction too, so
+        :class:`~optimization_engine.constraints.ConstraintLayer`,
+        :class:`~optimization_engine.stress.Shock` and
+        :class:`~optimization_engine.benchmark.BenchmarkSpec` objects; after
+        this they behave identically. It runs on direct construction too, so
         ``EngineConfig(stress=[{"name": ..., "returns": ...}])`` is as valid as
         the loaded form, and a malformed scenario is refused where it was
         written rather than at the solve.
+
+        The switches are read with :func:`_as_bool` rather than ``bool()``,
+        and the two numbers that cannot take any value are checked here, where
+        they were written: each of them used to load, and then either solve to
+        a meaningless book or fail deep inside an estimator.
 
         Raises:
             LayerConfigurationError: If any layer entry is malformed.
             StressError: If any stress entry is malformed, or two scenarios
                 share a name.
+            BenchmarkError: If the benchmark block is malformed.
+            ConfigurationError: If a switch is neither true nor false,
+                ``periods_per_year`` is not positive, or ``ewma_lambda`` is not
+                strictly between 0 and 1.
         """
+        from optimization_engine.optimizers import ConfigurationError
+
         self.constraint_layers = list(coerce_layers(self.constraint_layers))
         self.stress = shocks_from_dicts(self.stress)
+        self.benchmark = BenchmarkSpec.from_dict(self.benchmark)
+        for key in _BOOLEAN_KEYS:
+            setattr(self, key, _as_bool(getattr(self, key), key))
+        periods = float(self.periods_per_year)
+        if not math.isfinite(periods) or periods <= 0:
+            raise ConfigurationError(
+                f"periods_per_year must be a positive number of return "
+                f"observations per year — 252 daily, 52 weekly, 12 monthly; got "
+                f"{self.periods_per_year!r}. It annualizes the covariance, and a "
+                "zero or negative one makes every risk figure meaningless."
+            )
+        decay = float(self.ewma_lambda)
+        if not 0.0 < decay < 1.0:
+            raise ConfigurationError(
+                f"ewma_lambda must lie strictly between 0 and 1; got "
+                f"{self.ewma_lambda!r}. The estimator weights the observation k "
+                "periods back by (1 − λ)·λᵏ: at 0 the covariance rests on a single "
+                "day, at 1 every weight is zero, and above 1 they turn negative."
+            )
 
     @property
     def assets(self) -> list[str]:
@@ -414,7 +495,10 @@ class EngineConfig:
             ConfigurationError: If the mapping carries a key this class does
                 not read, or the optimizer block carries one
                 :class:`OptimizerSpec` does not. A misspelt ``max_tracking_eror``
-                used to load cleanly and simply not constrain anything.
+                used to load cleanly and simply not constrain anything. Also
+                for a value :meth:`__post_init__` refuses — a switch that is
+                neither true nor false, a non-positive ``periods_per_year``, an
+                ``ewma_lambda`` outside ``(0, 1)``.
             LayerConfigurationError: If a constraint layer is malformed.
             BenchmarkError: If the benchmark block is malformed.
             StressError: If the ``stress`` block is not a list of scenario
@@ -450,7 +534,9 @@ class EngineConfig:
             periods_per_year=int(data.get("periods_per_year", 252)),
             covariance_method=str(data.get("covariance_method", "ledoit_wolf")),
             ewma_lambda=float(data.get("ewma_lambda", 0.94)),
-            denoise=bool(data.get("denoise", False)),
+            # The switches go in raw: ``__post_init__`` reads them with
+            # ``_as_bool``, because ``bool("false")`` is ``True``.
+            denoise=data.get("denoise", False),
             denoise_method=str(data.get("denoise_method", "constant_residual")),
             denoise_alpha=float(data.get("denoise_alpha", 0.0)),
             detone=int(data.get("detone", 0) or 0),
@@ -479,8 +565,8 @@ class EngineConfig:
                 if data.get("max_active_share") is not None
                 else None
             ),
-            long_only=bool(data.get("long_only", True)),
-            fully_invested=bool(data.get("fully_invested", True)),
+            long_only=data.get("long_only", True),
+            fully_invested=data.get("fully_invested", True),
             leverage=(
                 float(data["leverage"]) if data.get("leverage") is not None else None
             ),
@@ -492,7 +578,7 @@ class EngineConfig:
                 if data.get("turnover_limit") is not None
                 else None
             ),
-            strict_mandate=bool(data.get("strict_mandate", False)),
+            strict_mandate=data.get("strict_mandate", False),
             stress=shocks_from_dicts(data.get("stress")),
         )
 
