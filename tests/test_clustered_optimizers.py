@@ -337,6 +337,72 @@ def test_nco_survives_a_long_short_mandate(blocked_cov: pd.DataFrame):
     assert result.is_compliant, result.violations
 
 
+def _two_block_cov() -> pd.DataFrame:
+    """Two tight pairs whose unconstrained intra-cluster books lever past ±1."""
+    names = ["p", "q", "r", "s"]
+    corr = np.array(
+        [
+            [1.0, 0.95, 0.1, 0.1],
+            [0.95, 1.0, 0.1, 0.1],
+            [0.1, 0.1, 1.0, 0.9],
+            [0.1, 0.1, 0.9, 1.0],
+        ]
+    )
+    vols = np.array([0.10, 0.20, 0.12, 0.30])
+    return pd.DataFrame(np.outer(vols, vols) * corr, index=names, columns=names)
+
+
+def _mlam_nco(cov: pd.DataFrame, clusters: list[list[str]], mu=None) -> np.ndarray:
+    """López de Prado's NCO, *MLAM* snippet 7.6, with its closed-form ``optPort``."""
+
+    def opt_port(sigma: np.ndarray, m: np.ndarray | None) -> np.ndarray:
+        raw = np.linalg.inv(sigma) @ (np.ones(len(sigma)) if m is None else m)
+        return raw / raw.sum()
+
+    loadings = pd.DataFrame(0.0, index=cov.index, columns=range(len(clusters)))
+    for k, members in enumerate(clusters):
+        sub_mu = None if mu is None else mu.loc[members].values
+        loadings.loc[members, k] = opt_port(cov.loc[members, members].values, sub_mu)
+    reduced = loadings.T.values @ cov.values @ loadings.values
+    reduced_mu = None if mu is None else loadings.T.values @ mu.values
+    return loadings.values @ opt_port(reduced, reduced_mu)
+
+
+@pytest.mark.parametrize("objective", ["min_variance", "max_sharpe"])
+def test_nco_long_short_layers_carry_no_hidden_box(objective: str):
+    """A long-short NCO is the reference NCO when the mandate does not bind.
+
+    The sub-problems were built with no bounds, which ``get_bounds`` reads as
+    the long-short default of (−1, 1): a box the mandate never set. Inside a
+    tight pair the unconstrained minimum-variance book is 1.75 long and 0.75
+    short, so under a (−10, 10) mandate the engine returned [0.6, 0, 0.4, 0]
+    against the snippet's [1.155, −0.495, 0.495, −0.155] — with no violation
+    and a clean audit, because the clipping happened where nothing audits.
+    """
+    cov = _two_block_cov()
+    mu = pd.Series([0.05, 0.06, 0.04, 0.07], index=cov.index)
+    constraints = PortfolioConstraints(
+        long_only=False, bounds={a: (-10.0, 10.0) for a in cov.index}
+    )
+    result = NCOOptimizer(
+        cov_matrix=cov,
+        expected_returns=mu if objective == "max_sharpe" else None,
+        constraints=constraints,
+        objective=objective,
+        n_clusters=2,
+        detone_for_clustering=False,
+    ).optimize()
+
+    clusters = [["p", "q"], ["r", "s"]]
+    assert sorted(sorted(m) for m in result.extras["nco_clusters"].values()) == clusters
+    reference = _mlam_nco(cov, clusters, mu if objective == "max_sharpe" else None)
+
+    np.testing.assert_allclose(result.weights.values, reference, atol=1e-6)
+    assert np.abs(result.weights.values).max() > 1.0, "the reference levers past 1"
+    assert result.extras["projection_distance"] < 1e-6
+    assert result.is_compliant, result.violations
+
+
 def test_nco_refuses_a_layer_whose_weights_net_to_zero(blocked_cov: pd.DataFrame):
     """A cancelled-out cluster is named, not quietly folded into the book.
 

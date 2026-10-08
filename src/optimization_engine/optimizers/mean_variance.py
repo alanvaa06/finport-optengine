@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from optimization_engine.optimizers._cvxpy_helpers import (
+    SolverFailure,
     build_constraints,
     build_scaled_constraints,
     homogeneous_ignored_constraints,
@@ -26,6 +27,11 @@ _SOLVER_FALLBACK = ["CLARABEL", "ECOS", "SCS", "OSQP"]
 #: as binding. Absolute floor for targets near zero, relative above it.
 _TARGET_SLACK_ATOL = 1e-7
 _TARGET_SLACK_RTOL = 1e-5
+
+#: A tangency ray whose ``κ = Σy`` comes back within a hundredfold of the 1e-8
+#: floor ``build_scaled_constraints`` imposes is resting on that floor, not
+#: describing a portfolio.
+_KAPPA_DEGENERATE = 1e-6
 
 
 class MinVarianceOptimizer(BaseOptimizer):
@@ -265,10 +271,20 @@ class MaxSharpeOptimizer(BaseOptimizer):
         if y.value is None or kappa.value is None:
             raise RuntimeError(f"Solver failed: status={problem.status}")
         scale = float(kappa.value)
-        if scale <= 1e-10:
-            raise RuntimeError(
-                "Degenerate tangency solution (Σy ≈ 0). The constraints likely "
-                "forbid any portfolio with positive excess return."
+        if scale <= _KAPPA_DEGENERATE:
+            # ``build_scaled_constraints`` floors κ at 1e-8, so κ sitting on
+            # that floor is the only way this branch is reached — and with a
+            # finite box it cannot be, since ``(μ − rf)'y = 1`` then forces κ
+            # away from zero. Without one, κ on the floor means the Sharpe
+            # ratio is still rising as ``y/κ`` grows: a supremum, not a maximum.
+            raise SolverFailure(
+                "unbounded",
+                info.attempts,
+                detail=(
+                    "The Sharpe ratio keeps rising as the book levers up, so "
+                    "no finite portfolio attains the maximum. Add per-asset "
+                    "bounds or a leverage cap."
+                ),
             )
         self._diagnostics.update(info.as_dict())
         return np.array(y.value) / scale

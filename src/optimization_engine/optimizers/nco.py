@@ -135,7 +135,7 @@ class NCOOptimizer(BaseOptimizer):
 
     # -- the two nested layers ---------------------------------------------
 
-    def _sub_constraints(self) -> PortfolioConstraints:
+    def _sub_constraints(self, assets: list) -> PortfolioConstraints:
         """Constraints for a sub-problem: budget and sign only.
 
         The mandate's per-asset bounds cannot be applied inside a cluster —
@@ -143,9 +143,24 @@ class NCOOptimizer(BaseOptimizer):
         intra-cluster weights sum to 1 within the cluster, not within the
         book. Applying them here would cap the wrong quantity. They are
         imposed on the combined result instead.
+
+        "No bounds" has to be said explicitly under ``long_only=False``. Left
+        empty, ``get_bounds`` falls back to its long-short default of
+        ``(−1, 1)`` — a box nobody set, which clipped any cluster whose
+        unconstrained book levers past one and left nothing in the result to
+        say so. Long-only needs no entry: non-negative weights summing to one
+        cannot reach the default cap of 1.
+
+        Args:
+            assets: The sub-problem's universe — one cluster's assets, or the
+                synthetic cluster labels of the inter-cluster layer.
         """
+        if self.constraints.long_only:
+            return PortfolioConstraints(fully_invested=True, long_only=True)
         return PortfolioConstraints(
-            fully_invested=True, long_only=self.constraints.long_only
+            fully_invested=True,
+            long_only=False,
+            bounds={a: (-np.inf, np.inf) for a in assets},
         )
 
     def _sub_solve(
@@ -206,7 +221,7 @@ class NCOOptimizer(BaseOptimizer):
         if len(assets) == 1:
             return pd.Series([1.0], index=assets)
 
-        constraints = self._sub_constraints()
+        constraints = self._sub_constraints(assets)
         if self.objective == "max_sharpe" and mu is not None:
             optimizer = MaxSharpeOptimizer(
                 expected_returns=mu,
