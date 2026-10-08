@@ -226,6 +226,9 @@ def deflated_sharpe_ratio(
         returns: Periodic returns of the *selected* strategy.
         n_trials: How many configurations were tried in total. If you swept a
             grid, this is the size of the grid — not the number you reported.
+            Never fewer than the entries in ``trial_sharpes``: a smaller
+            count is raised to that number, with a warning, and
+            :attr:`DeflatedSharpe.n_trials` reports the count used.
         trial_sharpes: The annualized Sharpe of every trial, if you kept
             them. Their variance is the right dispersion to deflate against
             and is far better than a guess. They must be *arithmetic*
@@ -265,6 +268,19 @@ def deflated_sharpe_ratio(
     std_error = _sharpe_standard_error(sharpe, n, skew, kurt)
 
     if trial_sharpes is not None:
+        n_supplied = int(np.asarray(trial_sharpes, dtype=float).size)
+        if n_trials < n_supplied:
+            # Every Sharpe handed in is a configuration that was tried, so the
+            # count of them is a floor on the trial count. Fifty Sharpes with
+            # n_trials=1 used to deflate against one trial — DSR 0.999 where
+            # the fifty give 0.793.
+            warnings.warn(
+                f"n_trials={n_trials} is fewer than the {n_supplied} trial Sharpes "
+                f"supplied; deflating against {n_supplied}.",
+                UserWarning,
+                stacklevel=2,
+            )
+            n_trials = n_supplied
         annual = _usable_trial_sharpes(trial_sharpes, periods_per_year)
         if annual.size < 2:
             raise ValueError(

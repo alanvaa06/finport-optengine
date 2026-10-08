@@ -533,3 +533,25 @@ def test_conditional_beta_and_relative_drawdown_pair_each_column(staggered):
     together = relative_drawdown(frame, bench)["walk_forward"].dropna()
     alone = relative_drawdown(late, bench)["walk_forward"]
     pd.testing.assert_series_equal(together, alone)
+
+
+# ---------------------------------------------------------------------------
+# 7. The trial count is never below the number of trial Sharpes supplied
+# ---------------------------------------------------------------------------
+#
+# Fifty trial Sharpes with n_trials=1 deflated against one trial: DSR = PSR
+# = 0.999, where the fifty the caller had actually run give 0.793.
+
+
+def test_n_trials_is_raised_to_the_trials_supplied():
+    from optimization_engine.analytics.selection import deflated_sharpe_ratio
+
+    rng = np.random.default_rng(7)
+    x = pd.Series(rng.normal(0.0008, 0.01, 1000))
+    trials = pd.Series(rng.normal(0.0, 0.5, 50))
+    honest = deflated_sharpe_ratio(x, n_trials=50, trial_sharpes=trials)
+    with pytest.warns(UserWarning, match="50 trial Sharpes"):
+        undercounted = deflated_sharpe_ratio(x, n_trials=1, trial_sharpes=trials)
+    assert undercounted.n_trials == 50
+    assert undercounted.deflated == pytest.approx(honest.deflated)
+    assert undercounted.deflated < undercounted.probabilistic
