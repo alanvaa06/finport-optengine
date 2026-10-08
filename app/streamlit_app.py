@@ -127,6 +127,7 @@ from optimization_engine.optimizers.factory import (  # noqa: E402
 from optimization_engine.optimizers.feasibility import analyze_feasibility  # noqa: E402
 from optimization_engine.optimizers.requirements import requirements_for  # noqa: E402
 from optimization_engine.reporting.exporters import (  # noqa: E402
+    excel_writer,
     performance_sheets,
     run_sheets,
     unique_sheet_name,
@@ -3217,7 +3218,7 @@ def _performance_downloads(report, key_prefix: str) -> None:
     left, right = st.columns(2)
     buf = io.BytesIO()
     frames = performance_sheets(report)
-    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+    with excel_writer(buf) as writer:
         for name, frame in frames.items():
             frame.to_excel(writer, sheet_name=name[:31], index=True)
     buf.seek(0)
@@ -4175,7 +4176,7 @@ with tab_report:
         # truncate onto each other, so the shared de-duplicating writer is
         # used rather than a bare slice that would silently drop a sheet.
         _used: set[str] = set()
-        with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+        with excel_writer(buf) as writer:
             for name, df in sheets.items():
                 if df is None:
                     continue

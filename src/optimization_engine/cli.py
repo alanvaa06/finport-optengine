@@ -36,7 +36,11 @@ from optimization_engine.ingest import fields as ingest_fields
 from optimization_engine.optimizers._cvxpy_helpers import SolverFailure
 from optimization_engine.optimizers.factory import available_optimizers
 from optimization_engine.optimizers.requirements import requirements_for
-from optimization_engine.reporting.exporters import run_sheets, write_excel_report
+from optimization_engine.reporting.exporters import (
+    excel_writer,
+    run_sheets,
+    write_excel_report,
+)
 from optimization_engine.reporting.payloads import (
     SCHEMA_VERSION,
     backtest_payload,
@@ -1818,7 +1822,10 @@ def _write_panel(path: Path, frame: pd.DataFrame) -> Path | None:
     if suffix == ".csv":
         frame.to_csv(path)
     elif suffix in {".xlsx", ".xls"}:
-        frame.to_excel(path, sheet_name="Precios")
+        # Through the shared writer: a provider's or a file's column names
+        # land in the header row, and must not be written as formulas.
+        with excel_writer(path) as writer:
+            frame.to_excel(writer, sheet_name="Precios")
     elif suffix == ".parquet":
         try:
             frame.to_parquet(path)
@@ -1843,7 +1850,8 @@ def _cmd_sample_data(args: argparse.Namespace) -> int:
     if out.suffix.lower() == ".csv":
         prices.to_csv(out)
     elif out.suffix.lower() in {".xlsx", ".xls"}:
-        prices.to_excel(out, sheet_name="Precios")
+        with excel_writer(out) as writer:
+            prices.to_excel(writer, sheet_name="Precios")
     elif out.suffix.lower() == ".parquet":
         prices.to_parquet(out)
     else:
@@ -1864,7 +1872,8 @@ def _cmd_fred(args: argparse.Namespace) -> int:
     if out.suffix.lower() == ".csv":
         df.to_csv(out)
     elif out.suffix.lower() in {".xlsx", ".xls"}:
-        df.to_excel(out)
+        with excel_writer(out) as writer:
+            df.to_excel(writer)
     elif out.suffix.lower() == ".parquet":
         df.to_parquet(out)
     else:

