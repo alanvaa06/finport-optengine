@@ -273,8 +273,8 @@ class CostSpec:
         """The one-number cost model, kept for callers that only have one number.
 
         Args:
-            transaction_cost_bps: Round-trip cost in basis points of the traded
-                notional.
+            transaction_cost_bps: Cost per side in basis points, charged on
+                every unit of traded notional, buys and sells alike.
 
         Returns:
             A spec charging it all as commission, with no spread and no impact.

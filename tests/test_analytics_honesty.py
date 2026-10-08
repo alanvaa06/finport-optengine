@@ -650,3 +650,34 @@ def test_the_cli_deflates_the_headline_run_against_every_trial(tmp_path, capsys)
     out = capsys.readouterr().out
     assert "2 cells" in out
     assert "Across 3 trial(s)" in out
+
+
+# ---------------------------------------------------------------------------
+# 10. The docstrings name the units the code computes in
+# ---------------------------------------------------------------------------
+#
+# Review sections 2.1 and 2.2: every ratio path converts an *annual*
+# risk-free rate, turnover is Σ|Δw| (two-sided), and the one-number cost is
+# charged per side. Docstrings said "per-period", "one-way" and "round-trip".
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "riskfree_rate: Per-period risk-free rate",
+        "risk_free_rate: Per-period risk-free rate",
+        "turnover: One-way turnover",
+        "One-way turnover on each",
+        "Sum of one-way turnover",
+        "total_turnover: One-way traded notional",
+        "Round-trip cost",
+        "the number a trading desk actually budgets",
+    ],
+)
+def test_no_docstring_misstates_a_unit(phrase):
+    offenders = [
+        path.relative_to(SRC).as_posix()
+        for path in sorted((SRC / "optimization_engine").rglob("*.py"))
+        if phrase in path.read_text(encoding="utf-8")
+    ]
+    assert not offenders, f"{phrase!r} still appears in {offenders}"
