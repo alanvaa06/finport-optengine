@@ -89,7 +89,7 @@ as the same class, distinguishable only by message.
 | --- | --- | --- |
 | `YahooFinanceError` | `load_prices_yahoo` | A missing `yfinance` install, an empty ticker list, an unknown ticker, an empty response |
 | `FREDError` | `load_fred_series`, `load_risk_free_rate` | A malformed series id (only `A-Z`, `0-9`, `_` pass), an unreachable FRED, an empty series |
-| `FXError` | `fetch_fx_to_base`, `convert_prices_to_base` | An unsupported currency (see `supported_currencies()`), a missing cross rate, a conversion that would drop every row |
+| `FXError` | `fetch_fx_to_base`, `convert_prices_to_base` | An unsupported currency (see `supported_currencies()`), a missing cross rate, a conversion that would drop every row, a rate history that starts more than `MAX_LEADING_FX_GAP` rows after the prices or leaves a price date more than `MAX_STALE_FX_DAYS` business days past its newest rate |
 
 Prefer the `ingest` layer for new code: it reports per-identifier provenance
 and routes on the error type. These three stay for the paths that already use

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 
+import numpy as np
 import pandas as pd
 
 from optimization_engine.data.fred import FREDError, load_fred_series
@@ -175,6 +176,14 @@ def fetch_fx_to_base(
 #: than valued with a rate from the future.
 MAX_LEADING_FX_GAP = 5
 
+#: How many business days a price may be valued at the last known rate before
+#: the rate counts as stale and the conversion is refused. FRED publishes the
+#: H.10 rates once a week, so a daily panel run before Monday's release is
+#: normally a week ahead of its newest rate, more around a holiday; two weeks
+#: without a print is a series that stopped, and carrying it forward would
+#: strip the currency move out of every return after it.
+MAX_STALE_FX_DAYS = 10
+
 
 def convert_prices_to_base(
     prices: pd.DataFrame,
@@ -194,8 +203,11 @@ def convert_prices_to_base(
         fx_rates: Pre-fetched X→base rates. When ``None``, they are fetched
             from FRED over the range of ``prices``.
         fill: How to fill FX gaps when business-day calendars do not align.
-            ``"ffill"`` (the default) carries the last known rate forward,
-            which is the only direction that uses no future information.
+            ``"ffill"`` (the default) values each price date at the last
+            rate on or before it, which is the only direction that uses no
+            future information — for at most :data:`MAX_STALE_FX_DAYS`
+            business days, past which the rate is stale and the conversion
+            is refused.
             A gap *before* the first known rate cannot be forward-filled;
             it is back-filled from the first rate for at most
             :data:`MAX_LEADING_FX_GAP` rows — the case of a request that
@@ -208,9 +220,10 @@ def convert_prices_to_base(
 
     Raises:
         FXError: If the price index is not a ``DatetimeIndex``, a rate for
-            one of the panel's currencies is unavailable, or the rate
-            history starts more than :data:`MAX_LEADING_FX_GAP` rows after
-            the prices do.
+            one of the panel's currencies is unavailable, the rate history
+            starts more than :data:`MAX_LEADING_FX_GAP` rows after the prices
+            do, or (under ``"ffill"``) a price date's newest rate is more
+            than :data:`MAX_STALE_FX_DAYS` business days old.
         ValueError: On a ``fill`` other than ``"ffill"``, ``"bfill"`` or
             ``None``.
     """
@@ -265,8 +278,43 @@ def convert_prices_to_base(
                 "gap from a later rate would value those prices with "
                 "information from the future."
             )
+        if fill == "ffill":
+            _refuse_stale_rate(fx_rates[ccy], prices.index, f"{ccy}->{base}")
         out[asset] = prices[asset].astype(float) * rate
     return out
+
+
+def _refuse_stale_rate(rates: pd.Series, dates: pd.DatetimeIndex, pair: str) -> None:
+    """Raise when a date would be valued at a rate too old to stand for it.
+
+    Age is counted in business days strictly after the rate's own date, up to
+    and including the price date — so a Friday rate for a Sunday price is zero
+    days old, and for the Monday after, one. Dates before the first rate are
+    the leading gap's business, not this check's.
+    """
+    known = rates.dropna().index
+    position = known.searchsorted(dates, side="right") - 1
+    covered = position >= 0
+    if not covered.any():
+        return
+    used = known[position[covered]]
+    day = np.timedelta64(1, "D")
+    age = np.busday_count(
+        used.values.astype("datetime64[D]") + day,
+        dates[covered].values.astype("datetime64[D]") + day,
+    )
+    stale = age > MAX_STALE_FX_DAYS
+    if not stale.any():
+        return
+    first = int(np.argmax(stale))
+    raise FXError(
+        f"{int(stale.sum())} price date(s) from {dates[covered][first].date()} "
+        f"would be valued at a {pair} rate more than {MAX_STALE_FX_DAYS} "
+        f"business days old — the newest rate before that date is from "
+        f"{used[first].date()}. Trim the panel to where the rate exists, or "
+        "pass fx_rates that cover it; carrying a stopped series forward "
+        "removes the currency move from every return after it."
+    )
 
 
 def _normalize_currencies(currencies: Iterable[str]) -> list[str]:
