@@ -201,15 +201,17 @@ def test_an_infeasible_mandate_fails_with_its_report(tmp_path):
 
 def test_backtest_is_shaped_by_the_config_it_is_handed(tmp_path):
     daily = call("backtest", {"sample": True, "optimizer": "risk_parity"})
-    monthly_config = tmp_path / "monthly.yaml"
-    monthly_config.write_text("periods_per_year: 12\noptimizer: risk_parity\n")
-    monthly = call(
+    calendar_config = tmp_path / "calendar.yaml"
+    # A basis the daily dates allow (seven-day markets): a monthly 12 on this
+    # panel is now refused as a contradiction rather than simulated.
+    calendar_config.write_text("periods_per_year: 365\noptimizer: risk_parity\n")
+    calendar = call(
         "backtest",
-        {"config_path": str(monthly_config), "sample": True, "lookback": 504, "rebalance_every": 63},
+        {"config_path": str(calendar_config), "sample": True, "lookback": 504, "rebalance_every": 63},
     )
     # The spec hash covers the annualization basis and the trading cadence;
-    # a monthly config used to be simulated as daily, so the two agreed.
-    assert daily["spec_hash"] != monthly["spec_hash"]
+    # the config's basis used to be ignored here, so the two agreed.
+    assert daily["spec_hash"] != calendar["spec_hash"]
     assert daily["window"]["n_periods"] > 0
 
 
@@ -246,6 +248,53 @@ def test_every_payload_carries_the_alignment_log(tmp_path):
 def test_a_complete_panel_reports_an_empty_alignment_log():
     """Present and empty, so a client can test the value rather than the key."""
     assert call("check_mandate", {"sample": True})["alignment"] == []
+
+
+def test_every_tool_reports_the_raw_panels_data_quality(tmp_path):
+    """optimize never looked at data quality; check looked after aligning.
+
+    Alignment removes the very gaps the report exists to name, so a panel
+    with an asset missing a quarter of its history came back from both tools
+    without a word about it. The report is now read off the raw panel, as the
+    CLI reads it, and travels in every payload.
+    """
+    import numpy as np
+    import pandas as pd
+
+    days = pd.bdate_range("2021-01-04", periods=600)
+    rng = np.random.default_rng(4)
+    gappy = 50 * np.exp(np.cumsum(rng.normal(0, 0.01, 600)))
+    gappy[100:400:2] = np.nan
+    steady = 80 * np.exp(np.cumsum(rng.normal(0, 0.01, 600)))
+    csv = tmp_path / "gappy.csv"
+    pd.DataFrame({"date": days, "GAPPY": gappy, "OK": steady}).to_csv(csv, index=False)
+
+    args = {"prices_path": str(csv), "optimizer": "min_variance"}
+    for tool, extra in (
+        ("optimize", {}),
+        ("check_mandate", {}),
+        ("backtest", {"lookback": 252, "rebalance_every": 63}),
+    ):
+        quality = call(tool, {**args, **extra})["data_quality"]
+        assert quality["usable"] is False, tool
+        assert {f["code"] for f in quality["findings"]} >= {"interior_gaps"}, tool
+
+
+def test_a_monthly_file_is_annualized_on_twelve_and_a_contradiction_refused(tmp_path):
+    """The CLI's rule, over the protocol: the dates decide, a contradiction fails."""
+    from optimization_engine.data.loader import sample_dataset
+
+    daily = sample_dataset(n_periods=252 * 10, seed=1)[["US_Equity", "Gold"]]
+    csv = tmp_path / "monthly.csv"
+    daily.resample("ME").last().to_csv(csv, index_label="date")
+
+    solved = call("optimize", {"prices_path": str(csv), "optimizer": "min_variance"})
+    assert solved["metrics"]["expected_volatility"] < 0.15
+
+    stated = tmp_path / "daily.yaml"
+    stated.write_text("periods_per_year: 252\noptimizer: min_variance\n")
+    message = failure("optimize", {"prices_path": str(csv), "config_path": str(stated)})
+    assert "periods_per_year: 12" in message
 
 
 # ---------------------------------------------------------------------------
@@ -441,3 +490,27 @@ def test_root_on_the_command_line_overrides_the_environment(tmp_path, monkeypatc
     monkeypatch.setattr(server.mcp, "run", lambda **kwargs: None)
     server.main(["--root", str(tmp_path)])
     assert server.allowed_roots() == (tmp_path.resolve(),)
+
+
+def test_every_tool_names_its_data_source(tmp_path):
+    """The CLI's `data_source`, filled in over the protocol too."""
+    from optimization_engine.data.loader import sample_dataset
+
+    csv = tmp_path / "prices.csv"
+    sample_dataset(n_periods=600)[["US_Equity", "Gold", "US_Treasuries"]].to_csv(
+        csv, index_label="date"
+    )
+    for tool, extra in (
+        ("optimize", {}),
+        ("check_mandate", {}),
+        ("backtest", {"lookback": 252, "rebalance_every": 63}),
+    ):
+        synthetic = call(tool, {"sample": True, "optimizer": "risk_parity", **extra})
+        assert synthetic["data_source"] == {
+            "kind": "sample", "synthetic": True, "path": None,
+            "provider": None, "identifiers": None,
+        }, tool
+        named = call(tool, {"prices_path": str(csv), "optimizer": "risk_parity", **extra})
+        assert named["data_source"]["kind"] == "file", tool
+        assert named["data_source"]["path"] == str(csv), tool
+        assert named["data_source"]["synthetic"] is False, tool

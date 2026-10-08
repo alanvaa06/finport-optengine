@@ -282,6 +282,19 @@ class PriceProvider(abc.ABC):
             raise ProviderConfigurationError("fetch_batch requires at least one identifier.")
         return panel
 
+    def cache_token(self) -> str | None:
+        """What, beyond the request, decides what this provider returns.
+
+        Part of the cache key. ``None`` — the default — for a provider whose
+        answer depends on the request alone. A provider that reads something
+        local and mutable returns a token that changes when that thing does,
+        so an edit is a cache miss rather than the old panel served as new.
+
+        Returns:
+            A short string, or ``None``.
+        """
+        return None
+
     def validate_credentials(self) -> bool | None:
         """Whether the configured key is usable.
 

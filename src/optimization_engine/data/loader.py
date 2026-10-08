@@ -32,6 +32,13 @@ SAMPLE_ASSETS: dict[str, tuple[str, float, float]] = {
 #: Just the names, in generation order.
 SAMPLE_UNIVERSE: tuple[str, ...] = tuple(SAMPLE_ASSETS)
 
+#: Last date of every :func:`sample_dataset` panel. Fixed rather than "today"
+#: so that the seed alone decides the panel: with a moving end date the values
+#: stayed put but every calendar-driven step — a monthly rebalance, a holdout
+#: cut-off — landed on different rows each day, and a backtest's
+#: ``result_hash`` changed under an unchanged ``spec_hash``.
+SAMPLE_END = pd.Timestamp("2025-12-31")
+
 
 def load_prices(
     path: str | Path,
@@ -119,8 +126,9 @@ def sample_dataset(
             the full multi-asset universe.
 
     Returns:
-        Prices indexed by business day, one column per asset, all starting
-        at 100.
+        Prices indexed by business day and ending on :data:`SAMPLE_END`, one
+        column per asset, all starting at 100. The same arguments give the
+        same panel, dates included, whatever day it is built.
     """
     rng = np.random.default_rng(seed)
 
@@ -160,5 +168,5 @@ def sample_dataset(
 
     log_rets = rng.multivariate_normal(mu, cov, size=n_periods)
     prices = 100.0 * np.exp(np.cumsum(log_rets, axis=0))
-    dates = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=n_periods)
+    dates = pd.bdate_range(end=SAMPLE_END, periods=n_periods)
     return pd.DataFrame(prices, index=dates, columns=keys)

@@ -727,6 +727,8 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
             run,
             output_path=str(out) if out is not None else None,
             alignment=alignment,
+            quality=quality,
+            ingest=inputs.ingest,
             data_source=inputs.data_source,
         ),
     )
@@ -1177,6 +1179,9 @@ class _Inputs:
     alignment: list[str]
     #: Where the prices came from, as :func:`_data_source` describes it.
     data_source: dict[str, object]
+    #: The ingest the panel came from, for the payload's resolved window;
+    #: ``None`` for ``--prices``, ``--sample`` and ``--yahoo``.
+    ingest: object = None
 
 
 def _fail(args: argparse.Namespace, message: str, code: int = 2) -> int:
@@ -1256,6 +1261,7 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
     _apply_estimator_flags(config, args)
 
     volumes = None
+    ingested = None
     ingested_currency = None
     try:
         if getattr(args, "provider", None):
@@ -1281,19 +1287,31 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
 
     if getattr(args, "base_currency", None):
         config.base_currency = args.base_currency.upper()
-    if ingested_currency:
-        # The ingest step converted from the provider's own currency
-        # metadata. Applying ``config.currencies`` on top would convert the
-        # panel twice, so the config's map is set aside and the base is the
-        # one the panel was actually converted into.
-        if config.currencies:
+    if ingested is not None and ingested_currency:
+        # The ingest step converted the series whose currency the provider
+        # declared, and stamped them with the base. Applying
+        # ``config.currencies`` to those would convert them twice, so their
+        # entries are set aside — and only theirs: a series that declared no
+        # currency (every file series) arrived unconverted, and the config
+        # is the only thing that says what it is quoted in.
+        base = ingested_currency.upper()
+        converted = {
+            name for name, record in ingested.panel.meta.items()
+            if record.currency == base
+        }
+        exempt = sorted(a for a in config.currencies if a in converted)
+        if exempt:
             print(
-                f"  Currency: the panel was converted to {ingested_currency.upper()} "
-                "on ingest, so the config's currencies map is not applied again.",
+                f"  Currency: {', '.join(exempt)} were converted to {base} on "
+                "ingest, so the config's currencies map is not applied to "
+                "them again.",
                 file=sys.stderr,
             )
-        config.base_currency = ingested_currency.upper()
-    elif config.currencies:
+        config.currencies = {
+            a: c for a, c in config.currencies.items() if a not in converted
+        }
+        config.base_currency = base
+    if config.currencies:
         try:
             prices = apply_fx_conversion(prices, config)
         except FXError as exc:
@@ -1306,6 +1324,32 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
                 args, "Config has no expected returns matching the price columns."
             )
         prices = prices[common]
+
+    # Before anything is annualized — the quality report included. A config
+    # that never set periods_per_year left 252 in place for monthly data, so
+    # the factor comes from the ingest interval or the dates instead, and a
+    # value the config does state is checked against them.
+    from optimization_engine.config import stated_keys
+    from optimization_engine.data.frequency import (
+        FrequencyMismatchError,
+        resolve_periods_per_year,
+    )
+
+    try:
+        config.periods_per_year, annualization = resolve_periods_per_year(
+            prices.index,
+            stated=(
+                config.periods_per_year
+                if "periods_per_year" in stated_keys(args.config)
+                else None
+            ),
+            interval=args.ingest_interval if ingested is not None else None,
+            default=config.periods_per_year,
+        )
+    except FrequencyMismatchError as exc:
+        return _fail(args, f"Annualization error: {exc}")
+    if annualization:
+        print(f"  Annualization: {annualization}", file=sys.stderr)
 
     # Quality is read off the *raw* panel on purpose: aligning first would
     # hide the very gaps the report exists to name.
@@ -1362,6 +1406,7 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
         volumes=volumes,
         alignment=alignment,
         data_source=data_source,
+        ingest=ingested,
     )
 
 
@@ -1616,6 +1661,8 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
             tearsheet=sheet,
             output_path=str(out) if out is not None else None,
             alignment=alignment,
+            quality=inputs.quality,
+            ingest=inputs.ingest,
             data_source=inputs.data_source,
         ),
     )
@@ -1720,7 +1767,12 @@ def _cmd_check(args: argparse.Namespace) -> int:
     _capture(
         args,
         check_payload(
-            quality, report, diag, alignment=alignment, data_source=inputs.data_source
+            quality,
+            report,
+            diag,
+            alignment=alignment,
+            ingest=inputs.ingest,
+            data_source=inputs.data_source,
         ),
     )
     if report.fatal_issues:

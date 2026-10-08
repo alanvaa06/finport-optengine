@@ -280,6 +280,36 @@ def test_stale_prices_are_flagged():
     assert any(i.code == "stale_prices" for i in report.issues)
 
 
+def test_a_series_that_rarely_moves_is_flagged_without_a_long_stale_run():
+    """Mostly-zero returns understate risk even when no run is long.
+
+    A price that updates every fourth day never repeats for five periods in a
+    row, so the stale-run check cannot fire — yet three returns in four are
+    exactly zero and its volatility and correlations are read off the fourth.
+    ``zero_return_share`` was computed for every asset and never looked at.
+    """
+    prices = sample_dataset(600, seed=6)[["US_Equity", "Gold"]].copy()
+    gold = prices["Gold"].to_numpy().copy()
+    for start in range(0, len(gold) - 4, 4):
+        gold[start + 1 : start + 4] = gold[start]
+    prices["Gold"] = gold
+
+    report = analyze_prices(prices)
+
+    assert int(report.per_asset.loc["Gold", "longest_stale_run"]) < 5
+    flagged = [i for i in report.issues if i.code == "zero_returns"]
+    assert [i.asset for i in flagged] == ["Gold"]
+    assert flagged[0].severity == "warning"
+    assert not report.is_clean
+
+
+def test_an_occasional_unchanged_price_is_not_flagged():
+    prices = sample_dataset(252 * 2).copy()
+    prices.iloc[100:103, 0] = prices.iloc[99, 0]
+    report = analyze_prices(prices)
+    assert not any(i.code == "zero_returns" for i in report.issues)
+
+
 def test_short_common_history_is_flagged():
     prices = sample_dataset(252 * 3).copy()
     prices.iloc[:600, 2] = np.nan
@@ -316,6 +346,29 @@ def test_align_panel_can_drop_short_assets():
     aligned, actions = align_panel(prices, method="drop_assets", min_observations=100)
     assert prices.columns[3] not in aligned.columns
     assert any("Dropped" in a for a in actions)
+
+
+def test_the_sample_panel_does_not_depend_on_the_day_it_is_built(monkeypatch):
+    """Same seed, same panel — dates included — on any day.
+
+    The index used to end at ``Timestamp.today()``. The values did not move,
+    but every calendar-driven step did: a monthly rebalance on the sample
+    panel gave a different NAV and ``result_hash`` each day under the same
+    ``spec_hash``, which is the one thing the two hashes exist to rule out.
+    """
+    from optimization_engine import BacktestSpec, run_backtest
+
+    def monthly_rebalanced(day: str):
+        monkeypatch.setattr(pd.Timestamp, "today", classmethod(lambda cls: pd.Timestamp(day)))
+        rets = prices_to_returns(sample_dataset())
+        weights = pd.Series(1.0 / rets.shape[1], index=rets.columns)
+        return rets.index, run_backtest(rets, weights, BacktestSpec(frequency="monthly"))
+
+    index_a, a = monthly_rebalanced("2026-10-08")
+    index_b, b = monthly_rebalanced("2026-10-23")
+    assert index_a.equals(index_b)
+    assert a.meta.spec_hash == b.meta.spec_hash
+    assert a.meta.result_hash == b.meta.result_hash
 
 
 def test_overlap_matrix_is_symmetric_with_counts_on_the_diagonal():

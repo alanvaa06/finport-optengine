@@ -5,7 +5,7 @@ That only helps if the refusal is legible, so this is the contract: every
 exception the library raises on purpose, what causes it, whether it is
 recoverable, and what to catch.
 
-There are twenty-four exception classes. You almost never want to catch all of
+There are twenty-five exception classes. You almost never want to catch all of
 them, because they mean three different things:
 
 | It means | Do this | Examples |
@@ -89,7 +89,7 @@ as the same class, distinguishable only by message.
 | --- | --- | --- |
 | `YahooFinanceError` | `load_prices_yahoo` | A missing `yfinance` install, an empty ticker list, an unknown ticker, an empty response |
 | `FREDError` | `load_fred_series`, `load_risk_free_rate` | A malformed series id (only `A-Z`, `0-9`, `_` pass), an unreachable FRED, an empty series |
-| `FXError` | `fetch_fx_to_base`, `convert_prices_to_base` | An unsupported currency (see `supported_currencies()`), a missing cross rate, a conversion that would drop every row |
+| `FXError` | `fetch_fx_to_base`, `convert_prices_to_base` | An unsupported currency (see `supported_currencies()`), a missing cross rate, a conversion that would drop every row, a rate history that starts more than `MAX_LEADING_FX_GAP` rows after the prices or leaves a price date more than `MAX_STALE_FX_DAYS` business days past its newest rate |
 
 Prefer the `ingest` layer for new code: it reports per-identifier provenance
 and routes on the error type. These three stay for the paths that already use
@@ -108,6 +108,7 @@ point: an invalid mandate should cost you a millisecond, not a walk-forward.
 | `SweepValidationError` | `SweepSpec` construction, `run_sweep`, `sweep_from_optimizers` | No parameters at all; a parameter with an empty value list; a non-positive `max_cells`; a dotted path that names nothing on the base configuration; a grid expanding past `max_cells` (200 by default, low on purpose, and itself under a hard cap) |
 | `LayerConfigurationError` | `ConstraintLayer`, `layer_from_mapping`, `effective_layers` | An unknown `basis`; a layer expressing limits as a share of its parent while naming no parent; a named parent layer that does not exist; buckets that sit in more than one parent bucket, so "30% of the parent" has no single meaning; a layer entry that is neither a mapping nor a `ConstraintLayer` |
 | `BenchmarkError` | `BenchmarkSpec` construction, `resolve_benchmark` | An unknown `kind` or `rebalance` rule; `single_asset` with no asset, or one outside the universe; `custom_weights` with no vector, or naming assets outside the universe; weights summing to zero under `normalize`; an empty universe |
+| `FrequencyMismatchError` | `resolve_periods_per_year`, and through it the CLI's `check`/`optimize`/`backtest` (exit 2) and the MCP tools | A `periods_per_year` the config states, or an ingest interval, that the spacing of the panel's dates contradicts — `periods_per_year: 252` on month-end prices. A value the config does *not* state is not a contradiction: the dates replace it |
 | `ConfigurationError` | `optimizer_factory` | The method requires expected returns, a covariance matrix or a returns frame and got none; a benchmark-relative method with no benchmark **weights**; a tracking-error or active-share budget set without benchmark weights; a malformed Black-Litterman view |
 | `HoldoutViolationError` | `assert_within_holdout`, on every gated path | A frame handed to a gated run carries a row past the holdout boundary. A guardrail against look-ahead, not a bug in your data |
 
