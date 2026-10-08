@@ -168,7 +168,10 @@ class LocalFile(PriceProvider):
                 provider_symbol=identifier,
                 provider=self.name,
                 kind=F.InstrumentKind.UNKNOWN,
-                currency=request.currency,
+                # Unknown, like the kind. Stamping the request's *target*
+                # currency here told the conversion step there was nothing
+                # to convert, and a peso file came back labelled dollars.
+                currency=None,
                 name=str(self._path.name),
             )
             for identifier in frames[F.CLOSE].columns

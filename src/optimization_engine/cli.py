@@ -1126,6 +1126,7 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
     _apply_estimator_flags(config, args)
 
     volumes = None
+    ingested = None
     ingested_currency = None
     try:
         if getattr(args, "provider", None):
@@ -1144,19 +1145,31 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
 
     if getattr(args, "base_currency", None):
         config.base_currency = args.base_currency.upper()
-    if ingested_currency:
-        # The ingest step converted from the provider's own currency
-        # metadata. Applying ``config.currencies`` on top would convert the
-        # panel twice, so the config's map is set aside and the base is the
-        # one the panel was actually converted into.
-        if config.currencies:
+    if ingested is not None and ingested_currency:
+        # The ingest step converted the series whose currency the provider
+        # declared, and stamped them with the base. Applying
+        # ``config.currencies`` to those would convert them twice, so their
+        # entries are set aside — and only theirs: a series that declared no
+        # currency (every file series) arrived unconverted, and the config
+        # is the only thing that says what it is quoted in.
+        base = ingested_currency.upper()
+        converted = {
+            name for name, record in ingested.panel.meta.items()
+            if record.currency == base
+        }
+        exempt = sorted(a for a in config.currencies if a in converted)
+        if exempt:
             print(
-                f"  Currency: the panel was converted to {ingested_currency.upper()} "
-                "on ingest, so the config's currencies map is not applied again.",
+                f"  Currency: {', '.join(exempt)} were converted to {base} on "
+                "ingest, so the config's currencies map is not applied to "
+                "them again.",
                 file=sys.stderr,
             )
-        config.base_currency = ingested_currency.upper()
-    elif config.currencies:
+        config.currencies = {
+            a: c for a, c in config.currencies.items() if a not in converted
+        }
+        config.base_currency = base
+    if config.currencies:
         try:
             prices = apply_fx_conversion(prices, config)
         except FXError as exc:
