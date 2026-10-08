@@ -27,6 +27,14 @@ EXTREME_RETURN_THRESHOLD = 0.50
 #: Runs of identical prices at or above this length suggest a stale feed.
 STALE_RUN_THRESHOLD = 5
 
+#: Share of exactly-zero returns above which a series is flagged. Past one
+#: period in four the price is updating less often than the panel is sampled
+#: — a weekly NAV in a daily panel, a quote nobody trades — and its volatility
+#: and correlations are read off the few periods in which it moved. Short,
+#: scattered repeats never reach :data:`STALE_RUN_THRESHOLD`, so this catches
+#: what the run-length check cannot.
+ZERO_RETURN_SHARE_THRESHOLD = 0.25
+
 
 @dataclass(frozen=True)
 class DataIssue:
@@ -264,6 +272,17 @@ def analyze_prices(
                     f"Price unchanged for {stale_run} consecutive periods.",
                     "A stale feed looks like low volatility to the optimizer, "
                     "which will overweight this asset. Check the source.",
+                )
+            )
+        zero_share = n_zero / len(asset_returns) if len(asset_returns) else 0.0
+        if zero_share > ZERO_RETURN_SHARE_THRESHOLD:
+            issues.append(
+                DataIssue(
+                    "warning", "zero_returns", str(asset),
+                    f"{zero_share:.0%} of its returns are exactly zero.",
+                    "The price updates less often than the panel is sampled, "
+                    "so its volatility and correlations are understated. "
+                    "Use a lower frequency for this asset, or check the source.",
                 )
             )
         if n_extreme:

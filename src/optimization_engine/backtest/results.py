@@ -168,7 +168,7 @@ class RunResult:
 
     @property
     def turnover(self) -> pd.Series:
-        """One-way turnover on each traded date."""
+        """Two-sided turnover, ``Σ|Δw|`` (buys plus sells), on each traded date."""
         if self.costs.empty:
             return pd.Series(dtype=float, name="turnover")
         return pd.Series(
@@ -190,7 +190,7 @@ class RunResult:
 
     @property
     def total_turnover(self) -> float:
-        """Sum of one-way turnover over the whole run, as a fraction of NAV."""
+        """Sum of two-sided turnover, ``Σ|Δw|``, over the run, as a fraction of NAV."""
         return float(self.costs["turnover"].sum()) if not self.costs.empty else 0.0
 
     @property
@@ -205,7 +205,7 @@ class RunResult:
 
     @property
     def annualized_turnover(self) -> float:
-        """Turnover per year — the number a trading desk actually budgets."""
+        """Two-sided turnover per year, ``Σ|Δw|``; one-way is half of it."""
         years = len(self.returns) / self.periods_per_year
         return float(self.total_turnover / years) if years > 0 else float("nan")
 
@@ -229,7 +229,8 @@ class RunResult:
 
         Args:
             periods_per_year: Annualization basis. Defaults to the run's own.
-            riskfree_rate: Per-period risk-free rate for the ratio metrics.
+            riskfree_rate: Annual risk-free rate for the ratio metrics, as a
+                fraction; converted to a per-period rate internally.
 
         Returns:
             A one-row-per-statistic summary frame, computed on the extended set.

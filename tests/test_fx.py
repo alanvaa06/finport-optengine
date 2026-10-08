@@ -240,3 +240,62 @@ def test_a_long_leading_fx_gap_is_refused_rather_than_filled_from_the_future():
         prices, asset_currency={"X": "MXN"}, base="USD", fx_rates=fx_rates, fill="bfill"
     )
     np.testing.assert_allclose(out["X"].values, np.full(30, 100.0 / 17.0))
+
+
+# ---------------------------------------------------------------------------
+# Which rate a price date is valued at
+# ---------------------------------------------------------------------------
+
+
+def test_a_price_date_the_rate_series_skips_takes_the_last_rate_before_it():
+    """An as-of join, not a reindex followed by a fill.
+
+    Reindexing the rates onto the price dates first throws away every rate
+    that falls between two price dates, so a month-end on a weekend took the
+    rate of the *previous month-end* rather than that Friday's. On two years
+    of month-end prices, 7 of 24 months were valued a month stale and the
+    FX part of the monthly returns correlated 0.40 with the truth.
+    """
+    month_ends = pd.date_range("2023-01-31", "2024-12-31", freq="ME")
+    prices = pd.DataFrame({"EU": 100.0}, index=month_ends)
+    days = pd.bdate_range("2023-01-02", "2025-01-10")
+    eur = pd.Series(np.linspace(1.00, 1.24, len(days)), index=days)
+
+    out = convert_prices_to_base(
+        prices, {"EU": "EUR"}, "USD", fx_rates=pd.DataFrame({"EUR": eur})
+    )
+
+    as_of = eur.reindex(eur.index.union(month_ends)).ffill().reindex(month_ends)
+    assert (month_ends.dayofweek >= 5).sum() == 7
+    np.testing.assert_allclose(out["EU"].values, 100.0 * as_of.values)
+
+
+def test_a_rate_series_that_stopped_is_refused_rather_than_carried():
+    """The forward fill had no limit, so a dead series valued years of prices.
+
+    A rate history ending in mid-2021 valued 914 later rows at its last
+    print, with no warning; every return in those years then carried no FX
+    move at all.
+    """
+    days = pd.bdate_range("2020-01-01", "2024-12-31")
+    prices = pd.DataFrame({"MX": 100.0}, index=days)
+    fx_days = days[days <= "2021-06-30"]
+    rates = pd.DataFrame({"MXN": np.linspace(0.050, 0.045, len(fx_days))}, index=fx_days)
+
+    with pytest.raises(FXError, match="2021-06-30"):
+        convert_prices_to_base(prices, {"MX": "MXN"}, "USD", fx_rates=rates)
+
+
+def test_a_rate_a_week_behind_the_prices_is_still_used():
+    """FRED publishes the H.10 rates weekly, so a week's lag is normal.
+
+    Prices through a Friday against rates through the Friday before are the
+    ordinary state of a daily run, not a stale series.
+    """
+    days = pd.bdate_range("2024-01-01", "2024-03-29")
+    prices = pd.DataFrame({"MX": 100.0}, index=days)
+    rates = pd.DataFrame({"MXN": 1.0 / 17.0}, index=days[days <= "2024-03-22"])
+    assert fx.MAX_STALE_FX_DAYS >= 5
+
+    out = convert_prices_to_base(prices, {"MX": "MXN"}, "USD", fx_rates=rates)
+    np.testing.assert_allclose(out["MX"].values, 100.0 / 17.0)

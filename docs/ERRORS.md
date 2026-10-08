@@ -5,7 +5,7 @@ That only helps if the refusal is legible, so this is the contract: every
 exception the library raises on purpose, what causes it, whether it is
 recoverable, and what to catch.
 
-There are twenty-six exception classes. You almost never want to catch all of
+There are twenty-seven exception classes. You almost never want to catch all of
 them, because they mean three different things:
 
 | It means | Do this | Examples |
@@ -89,7 +89,7 @@ as the same class, distinguishable only by message.
 | --- | --- | --- |
 | `YahooFinanceError` | `load_prices_yahoo` | A missing `yfinance` install, an empty ticker list, an unknown ticker, an empty response |
 | `FREDError` | `load_fred_series`, `load_risk_free_rate` | A malformed series id (only `A-Z`, `0-9`, `_` pass), an unreachable FRED, an empty series |
-| `FXError` | `fetch_fx_to_base`, `convert_prices_to_base` | An unsupported currency (see `supported_currencies()`), a missing cross rate, a conversion that would drop every row |
+| `FXError` | `fetch_fx_to_base`, `convert_prices_to_base` | An unsupported currency (see `supported_currencies()`), a missing cross rate, a conversion that would drop every row, a rate history that starts more than `MAX_LEADING_FX_GAP` rows after the prices or leaves a price date more than `MAX_STALE_FX_DAYS` business days past its newest rate |
 
 Prefer the `ingest` layer for new code: it reports per-identifier provenance
 and routes on the error type. These three stay for the paths that already use
@@ -108,13 +108,14 @@ point: an invalid mandate should cost you a millisecond, not a walk-forward.
 | `SweepValidationError` | `SweepSpec` construction, `run_sweep`, `sweep_from_optimizers` | No parameters at all; a parameter with an empty value list; a non-positive `max_cells`; a dotted path that names nothing on the base configuration; a grid expanding past `max_cells` (200 by default, low on purpose, and itself under a hard cap) |
 | `LayerConfigurationError` | `ConstraintLayer`, `layer_from_mapping`, `effective_layers` | An unknown `basis`; a layer expressing limits as a share of its parent while naming no parent; a named parent layer that does not exist; buckets that sit in more than one parent bucket, so "30% of the parent" has no single meaning; a layer entry that is neither a mapping nor a `ConstraintLayer` |
 | `BenchmarkError` | `BenchmarkSpec` construction, `resolve_benchmark` | An unknown `kind` or `rebalance` rule; `single_asset` with no asset, or one outside the universe; `custom_weights` with no vector, or naming assets outside the universe; weights summing to zero under `normalize`; an empty universe |
+| `FrequencyMismatchError` | `resolve_periods_per_year`, and through it the CLI's `check`/`optimize`/`backtest` (exit 2) and the MCP tools | A `periods_per_year` the config states, or an ingest interval, that the spacing of the panel's dates contradicts — `periods_per_year: 252` on month-end prices. A value the config does *not* state is not a contradiction: the dates replace it |
 | `ConfigurationError` | `optimizer_factory` | The method requires expected returns, a covariance matrix or a returns frame and got none; a benchmark-relative method with no benchmark **weights**; a tracking-error or active-share budget set without benchmark weights; a malformed Black-Litterman view; Black-Litterman risk-aversion calibration with no market return to calibrate against |
 | `HoldoutViolationError` | `assert_within_holdout`, on every gated path | A frame handed to a gated run carries a row past the holdout boundary. A guardrail against look-ahead, not a bug in your data |
 | `NonPSDCovarianceError` | `BaseOptimizer.optimize`, before any solve | A covariance whose smallest eigenvalue is below −1e-8 of its trace, so some portfolios would have negative variance. The engine's estimators repair their output with `nearest_psd`, so only a matrix handed to an optimizer directly gets here; the message names the repair. `exc.min_eigenvalue` and `exc.trace` carry the numbers |
 
 `SpecValidationError`, `SweepValidationError`, `LayerConfigurationError`,
-`BenchmarkError`, `ConfigurationError` and `NonPSDCovarianceError` subclass
-`ValueError`;
+`BenchmarkError`, `ConfigurationError`, `FrequencyMismatchError` and
+`NonPSDCovarianceError` subclass `ValueError`;
 `HoldoutViolationError` subclasses `RuntimeError`.
 
 Two adjacent cases raise plain builtins rather than a named type: bounds with
@@ -424,11 +425,14 @@ stderr, and turned into a code:
 | Code | Meaning |
 | --- | --- |
 | `0` | Success |
-| `1` | The command ran and the answer is "no" — `check` found the mandate infeasible or the data unusable, `ingest` completed but the panel is incomplete |
-| `2` | The command could not run — bad config, unresolvable benchmark, data error under `--strict`, infeasible constraints, solver failure, provider error |
+| `1` | The command ran and the answer is "no" — `check` found the data unusable, `ingest` completed but the panel is incomplete |
+| `2` | The command could not run, or the mandate cannot — no data source named (or more than one), a missing, unreadable or malformed config or price file, unresolvable benchmark, data error under `--strict`, infeasible constraints (including `check` finding the mandate impossible), solver failure, provider error |
 
 The distinction is worth honouring in a script: `1` means the engine worked and
-is telling you something, `2` means it never got that far.
+is telling you something about the data, `2` means it never got as far as an
+allocation. `check` puts an impossible mandate under `2` on purpose: it is the
+same finding `optimize --strict` stops on, and a script should not have to
+handle it differently depending on which command found it.
 
 `--json` keeps those codes for anything the command *returns*, with one
 addition: an exception that escapes a command is caught, its traceback printed
@@ -443,12 +447,15 @@ result still emits one:
 ```json
 {
   "schema_version": "...",
-  "command": "optimize",
-  "error": "SpecValidationError: execution_lag cannot be negative; got -1.",
-  "exit_code": 1
+  "command": "backtest",
+  "error": "execution_lag cannot be negative; got -1. A negative lag would trade on a decision not yet taken.",
+  "exit_code": 2
 }
 ```
 
+`error` carries the same reason the command printed to stderr — the
+infeasible constraint, the solver that gave up, the breached limit, the
+unknown method name — whether the command returned its code or raised.
 A caller parsing stdout never has to tell "no JSON" apart from "JSON I could
 not read". Note that a run which raised reports the failure *even if it had
 already captured a payload*: emitting that payload under a non-zero exit would

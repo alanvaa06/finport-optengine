@@ -154,42 +154,99 @@ def test_every_payload_declares_its_schema_version(capsys):
         assert payload["schema_version"] == SCHEMA_VERSION
 
 
+def _boom(*args, **kwargs):
+    raise RuntimeError("boom")
+
+
 @pytest.mark.parametrize(
-    ("argv", "expected_type"),
+    "argv",
     [
-        (["optimize", "--config", "/no/such/file.yaml", "--sample", "--json"],
-         "FileNotFoundError"),
-        (["check", "--config", "/no/such/file.yaml", "--sample", "--json"],
-         "FileNotFoundError"),
-        (["backtest", "--config", "/no/such/file.yaml", "--sample", "--json"],
-         "FileNotFoundError"),
+        ["optimize", "--config", CONFIG, "--sample", "--json"],
+        ["backtest", "--config", CONFIG, "--sample", "--json"],
     ],
 )
-def test_a_raised_exception_still_emits_json(capsys, argv, expected_type):
+def test_a_raised_exception_still_emits_json(capsys, monkeypatch, argv):
     """The half of the contract that a returned exit code does not cover.
 
     `_emit_json` originally caught only a command that *returned* non-zero.
-    A command that *raised* — an unreadable config being the cheapest way in
-    — printed a traceback and left stdout empty, which is exactly the "no
-    output versus output I could not parse" ambiguity this mode exists to
-    remove. The payload has to survive the exception, not just the failure.
+    A command that *raised* printed a traceback and left stdout empty, which
+    is exactly the "no output versus output I could not parse" ambiguity this
+    mode exists to remove. The payload has to survive the exception, not just
+    the failure.
+
+    The exception is injected rather than provoked. An unreadable config used
+    to be the cheapest way in, and it is now an input error with exit 2 —
+    which is what this branch is *not* for. It is the net under a defect.
     """
+    monkeypatch.setattr("optimization_engine.cli.run_engine", _boom)
     code, payload = _run(capsys, argv)
-    assert code != 0
+    assert code == 1
     assert payload["exit_code"] == code
     assert payload["schema_version"] == SCHEMA_VERSION
-    # The type and message, so a caller can tell a missing file from a bad
-    # one without scraping the traceback.
-    assert expected_type in payload["error"]
+    # The type and message, so a caller can tell one failure from another
+    # without scraping the traceback.
+    assert payload["error"] == "RuntimeError: boom"
 
 
-def test_the_traceback_survives_on_stderr(capsys):
+def test_the_traceback_survives_on_stderr(capsys, monkeypatch):
     """Catching the exception must not cost the human their diagnosis."""
-    main(["optimize", "--config", "/no/such/file.yaml", "--sample", "--json"])
+    monkeypatch.setattr("optimization_engine.cli.run_engine", _boom)
+    main(["optimize", "--config", CONFIG, "--sample", "--json"])
     captured = capsys.readouterr()
     json.loads(captured.out)
     assert "Traceback" in captured.err
-    assert "FileNotFoundError" in captured.err
+    assert "RuntimeError: boom" in captured.err
+
+
+@pytest.mark.parametrize("command", ["optimize", "check", "backtest"])
+def test_a_missing_config_is_an_input_error_not_a_crash(capsys, command):
+    """`docs/ERRORS.md` promises exit 2 and no traceback for a bad config.
+
+    The config was loaded outside every handler, so a missing file fell into
+    `_emit_json`'s net and came back as exit 1 with a traceback — the code
+    that means "the engine ran and the answer is no".
+    """
+    code = main([command, "--config", "/no/such/file.yaml", "--sample", "--json"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert code == 2
+    assert payload["exit_code"] == 2
+    # Still enough to tell a missing file from a malformed one.
+    assert "FileNotFoundError" in payload["error"]
+    assert "file.yaml" in payload["error"]
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # A misspelt key is refused by name.
+        ("max_tracking_eror: 0.03\n", "max_tracking_eror"),
+        # Not YAML at all.
+        ("bounds: [unclosed\n", "not valid YAML"),
+        # A known key holding a value of the wrong type.
+        ("ewma_lambda: not-a-number\n", "ValueError"),
+    ],
+)
+def test_a_malformed_config_is_exit_2_with_the_reason(capsys, tmp_path, text, expected):
+    config = tmp_path / "bad.yaml"
+    config.write_text(text)
+    code = main(["check", "--config", str(config), "--sample", "--json"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert code == 2
+    assert expected in payload["error"]
+    assert "Traceback" not in captured.err
+
+
+def test_a_missing_price_file_is_exit_2_with_the_reason(capsys, tmp_path):
+    missing = tmp_path / "nope.csv"
+    code = main(["optimize", "--config", CONFIG, "--prices", str(missing), "--json"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert code == 2
+    assert "nope.csv" in payload["error"]
+    assert "Traceback" not in captured.err
 
 
 def test_a_returned_failure_carries_its_reason(capsys, tmp_path):
@@ -202,6 +259,171 @@ def test_a_returned_failure_carries_its_reason(capsys, tmp_path):
     assert code == 2
     assert payload["exit_code"] == 2
     assert "no expected returns" in payload["error"]
+
+
+@pytest.mark.parametrize("command", ["optimize", "check", "backtest"])
+def test_no_data_source_is_refused_rather_than_filled_with_the_sample(capsys, command):
+    """Without --prices the commands used to solve on the synthetic panel.
+
+    `optimize --config c.yaml --json` exited 0 with plausible weights and no
+    word anywhere — stdout, stderr or payload — that none of it was market
+    data. A forgotten flag is the most likely way to get there.
+    """
+    code, payload = _run(capsys, [command, "--config", CONFIG, "--json"])
+    assert code == 2
+    assert "--prices" in payload["error"] and "--sample" in payload["error"]
+
+
+def test_two_data_sources_are_refused(capsys, tmp_path):
+    # --sample used to win silently over --prices, which is the same
+    # substitution reached by naming too much rather than too little.
+    csv = tmp_path / "prices.csv"
+    csv.write_text("date,A\n2024-01-01,1\n")
+    code, payload = _run(
+        capsys,
+        ["optimize", "--config", CONFIG, "--sample", "--prices", str(csv), "--json"],
+    )
+    assert code == 2
+    assert "--prices" in payload["error"] and "--sample" in payload["error"]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["check", "--config", CONFIG, "--sample", "--json"],
+        ["optimize", "--config", CONFIG, "--sample", "--json"],
+        ["backtest", "--config", CONFIG, "--sample",
+         "--lookback", "504", "--rebalance-every", "252", "--json"],
+    ],
+)
+def test_every_payload_names_its_data_source(capsys, argv):
+    code, payload = _run(capsys, argv)
+    assert code == 0
+    assert payload["data_source"] == {
+        "kind": "sample",
+        "synthetic": True,
+        "path": None,
+        "provider": None,
+        "identifiers": None,
+    }
+
+
+def test_a_price_file_is_named_as_the_source(capsys, tmp_path):
+    from optimization_engine.data.loader import sample_dataset
+
+    csv = tmp_path / "prices.csv"
+    sample_dataset(n_periods=400).to_csv(csv)
+    code, payload = _run(capsys, ["check", "--config", CONFIG, "--prices", str(csv), "--json"])
+    assert code == 0
+    assert payload["data_source"]["kind"] == "file"
+    assert payload["data_source"]["path"] == str(csv)
+    assert payload["data_source"]["synthetic"] is False
+
+
+def test_json_mode_writes_no_workbook_it_was_not_asked_for(capsys, tmp_path, monkeypatch):
+    """A machine caller reads stdout; a workbook in its cwd is a side effect.
+
+    `--output` defaulted to `outputs.xlsx`, so every `optimize --json` wrote
+    one into the working directory — replacing any file of that name, which
+    the probe that found this demonstrated on a pre-existing workbook.
+    """
+    monkeypatch.chdir(tmp_path)
+    victim = tmp_path / "outputs.xlsx"
+    victim.write_bytes(b"a workbook somebody else made")
+    code, payload = _run(capsys, ["optimize", "--config", CONFIG, "--sample", "--json"])
+    assert code == 0
+    assert payload["output_path"] is None
+    assert victim.read_bytes() == b"a workbook somebody else made"
+
+
+def test_replacing_an_existing_workbook_is_said_out_loud(capsys, tmp_path):
+    out = tmp_path / "report.xlsx"
+    out.write_bytes(b"last week's report")
+    code = main(["optimize", "--config", CONFIG, "--sample", "--output", str(out), "--json"])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert json.loads(captured.out)["output_path"] == str(out)
+    assert f"Overwriting {out}" in captured.err
+
+
+def _refusal_argv(case: str, tmp_path: Path) -> list[str]:
+    """A command line that ends in each of the refusals the CLI returns."""
+    import yaml
+
+    impossible = tmp_path / "impossible.yaml"
+    impossible.write_text("bounds:\n  US_Equity: [0.6, 1.0]\n  Cash: [0.6, 1.0]\n")
+    data = yaml.safe_load(Path(CONFIG).read_text())
+    assets = list(data["expected_returns"])
+    data["optimizer"] = {"name": "hrp"}
+    data["previous_weights"] = {a: (1.0 if a == assets[0] else 0.0) for a in assets}
+    data["turnover_limit"] = 0.01
+    unhonoured = tmp_path / "hrp.yaml"
+    unhonoured.write_text(yaml.safe_dump(data))
+    shocks = tmp_path / "shocks.yaml"
+    shocks.write_text(
+        yaml.safe_dump({"shocks": [{"name": "bad", "returns": {"NOT_IN_PANEL": -0.1}}]})
+    )
+    universe = tmp_path / "universe.yaml"
+    universe.write_text(
+        yaml.safe_dump({"rules": [{"kind": "rolling", "panel": "returns", "windwo": 3}]})
+    )
+    short = ["--lookback", "252", "--rebalance-every", "252"]
+    return {
+        "solver_failure": ["optimize", "--config", str(impossible), "--sample"],
+        "infeasible_under_strict": [
+            "optimize", "--config", str(impossible), "--sample", "--strict",
+        ],
+        "mandate_violation": [
+            "optimize", "--config", str(unhonoured), "--sample", "--strict-mandate",
+        ],
+        "unknown_optimizer": ["describe", "nope"],
+        "optimize_stress": [
+            "optimize", "--config", CONFIG, "--sample", "--stress", str(shocks),
+        ],
+        "unreadable_stress_file": [
+            "optimize", "--config", CONFIG, "--sample",
+            "--stress", str(tmp_path / "nowhere.yaml"),
+        ],
+        "backtest_stress": [
+            "backtest", "--config", CONFIG, "--sample", *short, "--stress", str(shocks),
+        ],
+        "unreadable_universe": [
+            "backtest", "--config", CONFIG, "--sample", *short,
+            "--universe", str(universe),
+        ],
+        "bad_spec": [
+            "backtest", "--config", CONFIG, "--sample", "--execution-lag", "-1",
+        ],
+    }[case] + ["--json"]
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("solver_failure", "Optimization failed"),
+        ("infeasible_under_strict", "Minimum weights sum to"),
+        ("mandate_violation", "this method did not satisfy it"),
+        ("unknown_optimizer", "Unknown optimizer 'nope'"),
+        ("optimize_stress", "NOT_IN_PANEL"),
+        ("unreadable_stress_file", "Could not read stress scenarios"),
+        ("backtest_stress", "NOT_IN_PANEL"),
+        ("unreadable_universe", "windwo"),
+        ("bad_spec", "execution_lag"),
+    ],
+)
+def test_every_refusal_carries_its_reason_into_the_payload(
+    capsys, tmp_path, case, expected
+):
+    """A returned 2 used to emit "the command exited before producing a result".
+
+    True, and useless to a caller: the infeasible mandate, the solver that
+    gave up, the breached limit and the unknown method name were all printed
+    to stderr and none of them reached the document the caller parses.
+    """
+    code, payload = _run(capsys, _refusal_argv(case, tmp_path))
+    assert code == 2
+    assert payload["exit_code"] == 2
+    assert expected in payload["error"], payload["error"]
 
 
 def test_backtest_notes_carry_their_values_not_only_their_keys():
@@ -246,3 +468,125 @@ def test_backtest_notes_are_empty_rather_than_absent():
 
     assert _notes(None) == {}
     assert _notes({}) == {}
+
+
+# ---------------------------------------------------------------------------
+# What the data looked like, and where it came from
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def flawed_panel(tmp_path):
+    """An unadjusted 4:1 split and an asset missing every other day for half
+    its history (25% interior gaps, an error by the quality report's rule)."""
+    import numpy as np
+    import pandas as pd
+
+    days = pd.bdate_range("2021-01-04", periods=600)
+    rng = np.random.default_rng(4)
+    split = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, 600)))
+    split[300:] /= 4
+    gappy = 50 * np.exp(np.cumsum(rng.normal(0, 0.01, 600)))
+    gappy[100:400:2] = np.nan
+    steady = 80 * np.exp(np.cumsum(rng.normal(0, 0.01, 600)))
+    path = tmp_path / "flawed.csv"
+    pd.DataFrame(
+        {"date": days, "SPLIT": split, "GAPPY": gappy, "OK": steady}
+    ).to_csv(path, index=False)
+    config = tmp_path / "cfg.yaml"
+    config.write_text("optimizer: min_variance\n")
+    return path, config
+
+
+def _codes(payload) -> dict[str, set[str]]:
+    found: dict[str, set[str]] = {}
+    for finding in payload["data_quality"]["findings"]:
+        found.setdefault(finding["code"], set()).add(finding["asset"])
+    return found
+
+
+@pytest.mark.parametrize("command", ["optimize", "backtest", "check"])
+def test_every_payload_carries_the_data_quality_findings(
+    capsys, tmp_path, flawed_panel, command
+):
+    """A run on flawed data exited 0 and its JSON never mentioned the flaws.
+
+    The console printed "Data error — GAPPY ..." on stderr; a machine reading
+    stdout saw a clean-looking book.
+    """
+    path, config = flawed_panel
+    argv = [command, "--config", str(config), "--prices", str(path), "--json"]
+    if command == "optimize":
+        argv += ["--output", str(tmp_path / "o.xlsx")]
+    if command == "backtest":
+        argv += ["--lookback", "252", "--rebalance-every", "63"]
+
+    _, payload = _run(capsys, argv)
+
+    quality = payload["data_quality"]
+    assert quality["usable"] is False
+    assert quality["clean"] is False
+    codes = _codes(payload)
+    assert codes["interior_gaps"] == {"GAPPY"}
+    assert codes["extreme_returns"] == {"SPLIT"}
+    gaps = next(f for f in quality["findings"] if f["code"] == "interior_gaps")
+    assert gaps["severity"] == "error"
+    assert gaps["message"] and gaps["suggestion"]
+    # check's original keys keep their meaning.
+    assert isinstance(quality["errors"], list) and quality["errors"]
+    assert quality["n_common_periods"] > 0
+
+
+def test_a_clean_panel_reports_no_findings_rather_than_no_key(capsys, tmp_path):
+    _, payload = _run(
+        capsys,
+        ["optimize", "--config", CONFIG, "--sample", "--output", str(tmp_path / "o.xlsx"), "--json"],
+    )
+    assert payload["data_quality"]["usable"] is True
+    assert isinstance(payload["data_quality"]["findings"], list)
+
+
+@pytest.mark.parametrize("command", ["optimize", "backtest", "check"])
+def test_the_resolved_ingest_window_is_in_the_payload(capsys, tmp_path, command):
+    """An ingest with no end date ends today, and the document has to say so.
+
+    The resolved window was hashed into the cache key and recorded nowhere a
+    reader of the result could see it, so two runs a day apart produced
+    different numbers from what looked like the same request.
+    """
+    import datetime as dt
+
+    from optimization_engine.ingest.spec import IngestRequest
+
+    config = tmp_path / "cfg.yaml"
+    config.write_text("optimizer: min_variance\n")
+    argv = [
+        command, "--config", str(config), "--provider", "sample",
+        "--identifiers", "US_Equity,Gold,US_Treasuries", "--ingest-period", "3y",
+        "--json",
+    ]
+    if command == "optimize":
+        argv += ["--output", str(tmp_path / "o.xlsx")]
+    if command == "backtest":
+        argv += ["--lookback", "252", "--rebalance-every", "63"]
+
+    _, payload = _run(capsys, argv)
+
+    window = payload["ingest"]
+    expected = IngestRequest(
+        identifiers=("US_Equity", "Gold", "US_Treasuries"), provider="sample", period="3y"
+    )
+    assert window["provider"] == "sample"
+    assert window["end"] == dt.date.today().isoformat()
+    assert window["start"] == expected.start.isoformat()
+    assert window["interval"] == "1d"
+    assert window["fingerprint"] == expected.fingerprint()
+    assert window["from_cache"] is False
+
+
+def test_a_panel_that_was_not_ingested_says_so(capsys, tmp_path):
+    _, payload = _run(
+        capsys,
+        ["optimize", "--config", CONFIG, "--sample", "--output", str(tmp_path / "o.xlsx"), "--json"],
+    )
+    assert payload["ingest"] is None

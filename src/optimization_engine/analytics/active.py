@@ -577,7 +577,9 @@ def active_risk_decomposition(
     a standard way to be surprised.
 
     Args:
-        weights: Portfolio weights, as fractions of the book.
+        weights: Portfolio weights, as fractions of the book. Assets it does
+            not list count as zero — a name only the benchmark holds is an
+            active underweight, and it is decomposed like any other.
         benchmark_weights: The benchmark's weights over the same universe.
             Assets it does not hold count as zero.
         cov_matrix: Asset covariance, on whatever periodicity the reported
@@ -595,10 +597,17 @@ def active_risk_decomposition(
     Raises:
         ValueError: If the inputs share no assets with the covariance matrix.
     """
-    assets = [a for a in cov_matrix.columns if a in weights.index]
+    # Either side's names, not just the book's: a book listed by its holdings
+    # used to drop every benchmark-only name, and with it that name's active
+    # underweight — 4.71% tracking error reported against a true 8.16%.
+    assets = [
+        a for a in cov_matrix.columns
+        if a in weights.index or a in benchmark_weights.index
+    ]
     if not assets:
         raise ValueError(
-            "The weight vector and the covariance matrix share no assets."
+            "Neither the weights nor the benchmark share an asset with the "
+            "covariance matrix."
         )
     sigma = cov_matrix.loc[assets, assets].values
     w = weights.reindex(assets).fillna(0.0).values.astype(float)

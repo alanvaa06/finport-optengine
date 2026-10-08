@@ -188,7 +188,34 @@ def fit_marchenko_pastur(
 
     Returns:
         ``(fitted_variance, lambda_max)``. ``lambda_max`` is the cutoff above
-        which an eigenvalue is treated as signal.
+        which an eigenvalue is treated as signal. When the fit does not
+        converge the variance falls back to 1.0 — the pure-noise edge, the
+        widest cutoff there is — and a ``UserWarning`` says so.
+    """
+    variance, failure = _fit_noise_variance(eigenvalues, q, bandwidth)
+    if failure:
+        _warn_fit_failed(failure)
+    lambda_max = variance * (1.0 + np.sqrt(1.0 / q)) ** 2
+    return variance, float(lambda_max)
+
+
+def _warn_fit_failed(reason: str) -> None:
+    warnings.warn(
+        f"The Marchenko-Pastur fit did not converge ({reason}), so the noise "
+        "variance fell back to 1.0. That is the widest noise edge there is: "
+        "weak factors below it are treated as noise.",
+        stacklevel=3,
+    )
+
+
+def _fit_noise_variance(
+    eigenvalues: np.ndarray, q: float, bandwidth: float
+) -> tuple[float, str]:
+    """The fitted ``σ²``, and why the fit failed — empty when it did not.
+
+    Split from :func:`fit_marchenko_pastur` so the fallback can travel to the
+    :class:`DenoiseReport` as a flag rather than only as a value of 1.0 that
+    is indistinguishable from a genuinely pure-noise panel.
     """
     from scipy.optimize import minimize_scalar
 
@@ -210,12 +237,11 @@ def fit_marchenko_pastur(
 
     try:
         found = minimize_scalar(sse, bounds=(1e-4, 1.0 - 1e-4), method="bounded")
-        variance = float(found.x) if found.success else 1.0
-    except Exception:  # pragma: no cover - optimizer edge cases
-        variance = 1.0
-
-    lambda_max = variance * (1.0 + np.sqrt(1.0 / q)) ** 2
-    return variance, float(lambda_max)
+    except Exception as exc:  # pragma: no cover - optimizer edge cases
+        return 1.0, f"{type(exc).__name__}: {exc}"
+    if not found.success:
+        return 1.0, "the optimizer reported no success"
+    return float(found.x), ""
 
 
 # ---------------------------------------------------------------------------
@@ -245,8 +271,17 @@ class DenoiseReport:
             1 means the panel is close to noise.
         eigenvalue_cutoff: The fitted ``λ₊``.
         n_signal_eigenvalues: How many eigenvalues sit above the cutoff — the
-            number of factors the data can actually support.
-        signal_share: Fraction of total variance carried by those factors.
+            number of factors the data can actually support. Zero on a panel
+            of pure noise; the caller's ``n_signal`` when one was given.
+        n_factors_kept: How many the filter actually kept as signal. Equal to
+            ``n_signal_eigenvalues`` unless that was forced into ``[1, N−1]``:
+            the leading eigenvalue is always kept, because filtering all of
+            them would erase the correlation structure, and keeping all would
+            make the filter a no-op.
+        signal_share: Fraction of total variance carried by the kept factors.
+        noise_fit_failed: The Marchenko-Pastur fit did not converge, so
+            ``noise_variance`` is the 1.0 fallback rather than an estimate —
+            the widest noise edge, which can class weak factors as noise.
         method: Which denoising rule was applied.
         detoned_factors: How many leading eigenvectors were removed.
         condition_before: Condition number of the input matrix — the
@@ -283,17 +318,24 @@ class DenoiseReport:
     correlation_condition_after: float = float("nan")
     n_observations_effective: int = -1
     effective_sample_note: str = ""
+    n_factors_kept: int = -1
+    noise_fit_failed: bool = False
 
     def __post_init__(self) -> None:
         """Default the effective sample to the nominal one.
 
         Only a caller that knows the estimator down-weights its own history
         (EWMA) can tell the two apart, so the sentinel means "nobody said
-        otherwise" rather than "unknown".
+        otherwise" rather than "unknown". ``n_factors_kept`` defaults the same
+        way, to the fitted count.
         """
         if self.n_observations_effective < 0:
             object.__setattr__(
                 self, "n_observations_effective", int(self.n_observations)
+            )
+        if self.n_factors_kept < 0:
+            object.__setattr__(
+                self, "n_factors_kept", int(self.n_signal_eigenvalues)
             )
 
     def describe(self) -> str:
@@ -309,9 +351,18 @@ class DenoiseReport:
             f"{self.n_assets} assets (T/N = {self.q:.1f}) put the noise edge at "
             f"λ₊ = {self.eigenvalue_cutoff:.3f}. "
             f"{self.n_signal_eigenvalues} of {self.n_assets} eigenvalues sit "
-            f"above it, carrying {self.signal_share:.1%} of total variance; the "
-            f"remaining {self.n_assets - self.n_signal_eigenvalues} were "
-            f"treated as noise ({self.method.replace('_', ' ')}). "
+            "above it"
+        )
+        if self.n_factors_kept != self.n_signal_eigenvalues:
+            line += (
+                f", but {self.n_factors_kept} were kept anyway — the filter "
+                "never treats the whole matrix as noise, nor none of it"
+            )
+        line += (
+            f". The kept factors carry {self.signal_share:.1%} of total "
+            f"variance; the remaining {self.n_assets - self.n_factors_kept} "
+            f"eigenvalues were treated as noise "
+            f"({self.method.replace('_', ' ')}). "
             f"The correlation's condition number went "
             f"{self.correlation_condition_before:.3g} → "
             f"{self.correlation_condition_after:.3g}; the covariance's went "
@@ -331,6 +382,12 @@ class DenoiseReport:
             )
         else:
             line += "."
+        if self.noise_fit_failed:
+            line += (
+                " The Marchenko-Pastur fit did not converge, so the noise "
+                "variance is the 1.0 fallback rather than an estimate — the "
+                "widest edge there is, which can class weak factors as noise."
+            )
         if self.effective_sample_note:
             line += " " + self.effective_sample_note
         if self.detoned_factors:
@@ -389,15 +446,19 @@ def denoise_correlation(
     eigenvalue, eigenvector = _sorted_eigen(corr)
     cond_before = _condition(eigenvalue)
 
-    variance, cutoff = fit_marchenko_pastur(eigenvalue, q, bandwidth=bandwidth)
+    variance, failure = _fit_noise_variance(eigenvalue, q, bandwidth)
+    if failure:
+        _warn_fit_failed(failure)
+    cutoff = variance * (1.0 + np.sqrt(1.0 / q)) ** 2
     if n_signal is None:
-        n_facts = int((eigenvalue > cutoff).sum())
+        n_found = int((eigenvalue > cutoff).sum())
     else:
-        n_facts = int(np.clip(n_signal, 0, n))
+        n_found = int(np.clip(n_signal, 0, n))
     # Keeping every eigenvalue would make the filter a no-op; keeping none
     # would erase the correlation structure entirely. Both are degenerate
-    # readings of a fit, so the market factor is always retained.
-    n_facts = int(np.clip(n_facts, 1, n - 1)) if n > 1 else n
+    # readings of a fit, so the market factor is always retained — and the
+    # report carries the count the fit found beside the one that was kept.
+    n_facts = int(np.clip(n_found, 1, n - 1)) if n > 1 else n
 
     filtered = eigenvalue.copy()
     if method == "constant_residual":
@@ -423,7 +484,9 @@ def denoise_correlation(
         q=float(q),
         noise_variance=float(variance),
         eigenvalue_cutoff=float(cutoff),
-        n_signal_eigenvalues=n_facts,
+        n_signal_eigenvalues=n_found,
+        n_factors_kept=n_facts,
+        noise_fit_failed=bool(failure),
         signal_share=float(eigenvalue[:n_facts].sum() / eigenvalue.sum())
         if eigenvalue.sum() > 0
         else float("nan"),

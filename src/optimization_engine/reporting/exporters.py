@@ -8,8 +8,10 @@ A weights tab on its own is a number without its provenance.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -17,6 +19,44 @@ from optimization_engine._optional import require
 
 #: Excel refuses sheet names longer than this.
 _SHEET_NAME_LIMIT = 31
+
+#: xlsxwriter's own defaults turn a string that starts with ``=`` into a
+#: formula and one that looks like a URL into a live hyperlink. Asset names
+#: arrive from price-file headers, often a vendor's, so a column called
+#: ``=HYPERLINK("http://…"&A1, "details")`` became a formula in every sheet
+#: that named the asset — one click away from sending a cell of the report
+#: to someone else's server. Nothing this package writes is meant to be a
+#: formula or a link, so both are off for every workbook.
+_WORKBOOK_OPTIONS = {"strings_to_formulas": False, "strings_to_urls": False}
+
+
+def excel_writer(target: Any) -> pd.ExcelWriter:
+    """An xlsxwriter-backed :class:`pandas.ExcelWriter` that writes text as text.
+
+    Every workbook the CLI and the app produce goes through this, so a cell
+    whose value came from a data file can never become a formula or a link.
+
+    Args:
+        target: A path, or a binary buffer such as :class:`io.BytesIO` for a
+            workbook built in memory.
+
+    Returns:
+        The writer, to be used as a context manager.
+
+    Raises:
+        MissingDependencyError: If xlsxwriter is not installed. Install it
+            with ``finport-optengine[excel]``.
+        ValueError: If ``target`` is a path whose extension is not ``.xlsx``.
+    """
+    # Checked before opening the writer: pandas resolves the engine by
+    # name and its own ImportError names xlsxwriter without saying which
+    # extra ships it.
+    require("xlsxwriter", extra="excel", purpose="writing Excel workbooks")
+    return pd.ExcelWriter(
+        target,
+        engine="xlsxwriter",
+        engine_kwargs={"options": dict(_WORKBOOK_OPTIONS)},
+    )
 
 
 def write_excel_report(
@@ -27,7 +67,8 @@ def write_excel_report(
     ``None`` entries are skipped, Series are promoted to single-column frames,
     and names are truncated to Excel's 31-character limit. Truncation can
     collide, so a numeric suffix is appended rather than letting one sheet
-    silently overwrite another.
+    silently overwrite another. Text is written as text — see
+    :func:`excel_writer`.
 
     Args:
         path: Where to write the ``.xlsx``.
@@ -43,11 +84,7 @@ def write_excel_report(
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     used: set[str] = set()
-    # Checked before opening the writer: pandas resolves the engine by
-    # name and its own ImportError names xlsxwriter without saying which
-    # extra ships it.
-    require("xlsxwriter", extra="excel", purpose="writing Excel workbooks")
-    with pd.ExcelWriter(p, engine="xlsxwriter") as writer:
+    with excel_writer(p) as writer:
         for name, df in sheets.items():
             if df is None:
                 continue
@@ -131,7 +168,14 @@ def run_sheets(
             benchmark and none is passed, one is built from the run so that a
             workbook exported without extra arguments still carries the
             relative numbers.
+
+    Returns:
+        ``sheet name -> frame``. When a performance report cannot be built —
+        a benchmark sharing no dates with the walk-forward, say — its sheets
+        are left out, an ``omitted_sheets`` sheet names them with the reason,
+        and a ``UserWarning`` is issued.
     """
+    omitted: list[dict[str, str]] = []
     sheets: dict[str, pd.DataFrame] = {
         "weights": run.result.weights.to_frame("weight"),
         "summary": pd.DataFrame(
@@ -171,10 +215,12 @@ def run_sheets(
         if performance is None:
             try:
                 performance = run.performance(riskfree_rate=riskfree_rate)
-            except (ValueError, KeyError):
-                # A benchmark that shares no dates with the panel is reported
-                # by the UI; it must not take the whole workbook down with it.
+            except (ValueError, KeyError) as exc:
+                # A benchmark that shares no dates with the panel must not take
+                # the whole workbook down with it — but the sheets it costs are
+                # named, not silently missing.
                 performance = None
+                _omit(omitted, "performance_*", exc)
     if performance is not None:
         sheets.update(performance_sheets(performance))
 
@@ -266,6 +312,22 @@ def run_sheets(
                         prefix="oos_",
                     )
                 )
-            except (ValueError, KeyError):
-                pass
+            except (ValueError, KeyError) as exc:
+                _omit(omitted, "oos_performance_*", exc)
+    if omitted:
+        sheets["omitted_sheets"] = pd.DataFrame(omitted, columns=["sheets", "reason"])
     return sheets
+
+
+def _omit(omitted: list[dict[str, str]], sheets: str, exc: Exception) -> None:
+    """Record sheets the workbook leaves out, and warn, so the gap is visible.
+
+    These used to be dropped with nothing to show for it: a reader of the
+    workbook could not tell a report with no relative panel from one whose
+    relative panel failed.
+    """
+    reason = f"{type(exc).__name__}: {exc}"
+    omitted.append({"sheets": sheets, "reason": reason})
+    warnings.warn(
+        f"The report omits the {sheets} sheets: {reason}", UserWarning, stacklevel=3
+    )

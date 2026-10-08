@@ -68,21 +68,24 @@ EXPECTED_BREADTH = {
     25: [EQUITY, BONDS, GOLD, CREDIT],
     30: [EQUITY, BONDS, GOLD, CREDIT],
     35: [EQUITY, BONDS, GOLD, CREDIT],
-    # Row 40 is the first decision after the bonds line stopped printing. The
-    # screen still admits it — its five-session window ends on row 39, its last
-    # good print — and the delisting rule is what takes it out.
+    # Row 40 is the first bar the bonds line did not print on. The screen still
+    # admits it — its five-session window ends on row 39, its last good print —
+    # and so does the delisting rule: the book chosen on row 40 is held over
+    # row 40, so the silence it would need to see has not happened yet.
     40: [EQUITY, BONDS, GOLD, CREDIT],
     45: [EQUITY, GOLD, CREDIT],
     50: [EQUITY, GOLD, CREDIT],
     55: [EQUITY, GOLD, CREDIT],
 }
 
+#: The decision the delisting rule liquidates the bonds line on: the first
+#: one whose prior bars include a missing print. Row 40 would be reading its
+#: own bar, which is the look-ahead the rule must not have.
+BONDS_DELISTED_AT = 45
+
 #: What the optimizer is actually shown, once delisting is applied on top.
+#: On this panel the two rules agree on every decision.
 EXPECTED_SOLVED_ON = dict(EXPECTED_BREADTH)
-EXPECTED_SOLVED_ON[40] = [EQUITY, GOLD, CREDIT]
-EXPECTED_SOLVED_ON[45] = [EQUITY, GOLD, CREDIT]
-EXPECTED_SOLVED_ON[50] = [EQUITY, GOLD, CREDIT]
-EXPECTED_SOLVED_ON[55] = [EQUITY, GOLD, CREDIT]
 
 
 @pytest.fixture(scope="module")
@@ -204,7 +207,7 @@ def test_delisting_is_recorded_with_its_last_print(walk, returns):
     assert set(delistings) == {BONDS}
     assert delistings[BONDS] == {
         "last_print": pd.Timestamp(returns.index[BONDS_LAST_PRINT]).isoformat(),
-        "delisted_at": pd.Timestamp(returns.index[40]).isoformat(),
+        "delisted_at": pd.Timestamp(returns.index[BONDS_DELISTED_AT]).isoformat(),
     }
     assert run.run.meta.notes["delisting_grace"] == 0
 
@@ -215,7 +218,8 @@ def test_universe_note_records_breadth_and_policy(walk, returns):
     assert note["policy"] == "exclude"
     assert note["unknown_assets"] == []
     # The runner's breadth is the *screen's* verdict; the delisting rule is the
-    # walk-forward's, and row 40 is where the two disagree on purpose.
+    # walk-forward's. Neither can see row 40's missing print from row 40, so on
+    # this panel they agree on every decision.
     for row, members in EXPECTED_BREADTH.items():
         key = pd.Timestamp(returns.index[row]).isoformat()
         assert note["breadth"][key] == len(members), f"breadth on row {row}"
@@ -237,7 +241,7 @@ def test_trade_log_matches_the_hand_written_expectation(walk, returns):
 
     #: Every decision trades the names it holds or wants. The opening decision
     #: only buys; row 20 and row 25 add a name and trim the incumbents; row 40
-    #: is the liquidation.
+    #: still holds the bonds line, and row 45 is the liquidation.
     expected_by_row = {
         10: {EQUITY: "buy", BONDS: "buy"},
         15: {EQUITY: None, BONDS: None},
@@ -245,8 +249,8 @@ def test_trade_log_matches_the_hand_written_expectation(walk, returns):
         25: {EQUITY: "sell", BONDS: "sell", GOLD: "sell", CREDIT: "buy"},
         30: {EQUITY: None, BONDS: None, GOLD: None, CREDIT: None},
         35: {EQUITY: None, BONDS: None, GOLD: None, CREDIT: None},
-        40: {EQUITY: "buy", BONDS: "sell", GOLD: "buy", CREDIT: "buy"},
-        45: {EQUITY: None, GOLD: None, CREDIT: None},
+        40: {EQUITY: None, BONDS: None, GOLD: None, CREDIT: None},
+        45: {EQUITY: "buy", BONDS: "sell", GOLD: "buy", CREDIT: "buy"},
         50: {EQUITY: None, GOLD: None, CREDIT: None},
         55: {EQUITY: None, GOLD: None, CREDIT: None},
     }
@@ -263,27 +267,31 @@ def test_trade_log_matches_the_hand_written_expectation(walk, returns):
     # The listings never trade early, and the delisting never trades late.
     assert trades.loc[trades["asset"] == GOLD, "date"].min() == returns.index[20]
     assert trades.loc[trades["asset"] == CREDIT, "date"].min() == returns.index[25]
-    assert trades.loc[trades["asset"] == BONDS, "date"].max() == returns.index[40]
+    assert trades.loc[trades["asset"] == BONDS, "date"].max() == returns.index[
+        BONDS_DELISTED_AT
+    ]
 
 
 def test_the_delisted_line_is_sold_whole_and_the_book_holds_cash(walk, returns):
     run, _ = walk
     liquidation = run.run.trades[
         (run.run.trades["asset"] == BONDS)
-        & (run.run.trades["date"] == returns.index[40])
+        & (run.run.trades["date"] == returns.index[BONDS_DELISTED_AT])
     ]
     assert len(liquidation) == 1
     assert liquidation["side"].iloc[0] == "sell"
-    held_before = float(run.run.weights.loc[returns.index[39], BONDS])
+    held_before = float(run.run.weights.loc[returns.index[BONDS_DELISTED_AT - 1], BONDS])
     assert held_before == pytest.approx(0.25, abs=0.02)
-    # Sold at its last mark: the bar has no print for it, so the loop replays
-    # the position flat and the sale goes through at the previous close.
-    # ``weights`` reports the book at the *start* of row 39, so the sale is
-    # that position plus one bar of drift -- but the whole of it, not a slice.
+    # Sold at its last mark: the line has not printed since row 39, so the
+    # loop has replayed the position flat and the sale goes through at that
+    # close. ``weights`` reports the book at the *start* of row 44, so the sale
+    # is that position plus one bar of drift -- but the whole of it, not a slice.
     assert float(liquidation["traded_weight"].iloc[0]) == pytest.approx(
         -held_before, abs=5e-3
     )
-    assert float(run.run.weights.loc[returns.index[40]:, BONDS].abs().max()) == 0.0
+    assert float(
+        run.run.weights.loc[returns.index[BONDS_DELISTED_AT]:, BONDS].abs().max()
+    ) == 0.0
 
 
 def test_nothing_is_renormalised_behind_the_optimizer(walk, returns):
@@ -306,7 +314,7 @@ def test_tearsheet_assembles_over_the_universe_run(walk, returns):
     assert set(tearsheet.episodes["asset"]) == {EQUITY, BONDS, GOLD, CREDIT}
     bonds = tearsheet.episodes[tearsheet.episodes["asset"] == BONDS]
     assert bool(bonds["closed"].iloc[0]) is True
-    assert pd.Timestamp(bonds["end"].iloc[0]) <= returns.index[40]
+    assert pd.Timestamp(bonds["end"].iloc[0]) <= returns.index[BONDS_DELISTED_AT]
 
 
 def test_no_lookahead_end_to_end(returns, eligibility):

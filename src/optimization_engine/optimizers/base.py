@@ -141,8 +141,9 @@ class PortfolioConstraints:
         target_volatility: Hard volatility cap ``√(w'Σw) ≤ σ*``.
         previous_weights: The book being traded *from*. Required for a
             turnover budget and for reporting realized turnover.
-        turnover_limit: Cap on ``Σ|w_i − w_prev,i|``. A one-way turnover of
-            0.20 means at most 20% of the portfolio changes hands.
+        turnover_limit: Cap on ``Σ|w_i − w_prev,i|`` — two-sided, buys plus
+            sells. In a fully invested book a limit of 0.20 lets 10% of the
+            portfolio change hands: 10% sold and 10% bought.
         benchmark_weights: The index the mandate is measured against. Carried
             on the constraints rather than on the objective because it is what
             the two limits below are expressed relative to.
@@ -373,9 +374,11 @@ class BaseOptimizer(ABC):
             cov_matrix: Asset covariance, indexed and columned by asset name.
             constraints: The mandate. Defaults to an unconstrained long-only book
                 summing to one.
-            risk_free_rate: Per-period risk-free rate, in the same periodicity as
-                the inputs. Used by the Sharpe-based objectives and reported in
-                the result's summary statistics.
+            risk_free_rate: Risk-free rate in the units of the expected returns,
+                subtracted from them as given — annual when they are
+                annualized, as the engine passes them. Used by the
+                Sharpe-based objectives and reported in the result's
+                summary statistics.
             accept_inaccurate: Whether to take an ``optimal_inaccurate``
                 solution when no solver in the fallback chain converges
                 exactly. ``False`` refuses it — the solve raises

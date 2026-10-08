@@ -100,6 +100,14 @@ RUN_PANELS = ("returns", "prices")
 #: answer does not make the answer unknown.
 COMBINERS = ("all", "any")
 
+#: The extensions :func:`load_universe_rules` reads. Both parse through the
+#: YAML loader, which reads JSON as well.
+RULES_SUFFIXES = (".yaml", ".yml", ".json")
+
+#: Largest rules document read, in bytes. A real one is a few kilobytes; the
+#: limit exists so that a path pointing somewhere else is refused unread.
+MAX_RULES_BYTES = 1024 * 1024
+
 _DOCUMENT_KEYS = frozenset(
     {"schema_version", "combine", "panels", "rules", "hysteresis", "hold_through"}
 )
@@ -681,18 +689,47 @@ def load_universe_rules(path: str | Path) -> UniverseRules:
         directory so its relative panel paths resolve.
 
     Raises:
-        UniverseError: If the document is malformed, as
-            :meth:`UniverseRules.from_dict` describes, or is not valid YAML.
+        UniverseError: If the extension is not one of the three above, the
+            file is larger than :data:`MAX_RULES_BYTES`, the document is
+            malformed, as :meth:`UniverseRules.from_dict` describes, or it is
+            not valid YAML.
         FileNotFoundError: If the path does not exist.
     """
     import yaml
 
     p = Path(path)
+    # Extension and size before the read. The suffix used to choose a parser
+    # only after the whole file was in memory, and everything that was not
+    # .json went to YAML — so an extensionless credentials file was read and
+    # its second line came back inside the parse error.
+    suffix = p.suffix.lower()
+    if suffix not in RULES_SUFFIXES:
+        raise UniverseError(
+            f"{p}: a rules document ends in {', '.join(RULES_SUFFIXES)}; "
+            f"got {suffix or 'no extension'}."
+        )
+    size = p.stat().st_size
+    if size > MAX_RULES_BYTES:
+        raise UniverseError(
+            f"{p} is {size:,} bytes; a rules document is read up to "
+            f"{MAX_RULES_BYTES:,} bytes."
+        )
     text = p.read_text(encoding="utf-8")
     try:
-        data = yaml.safe_load(text) if p.suffix.lower() != ".json" else json.loads(text)
+        data = yaml.safe_load(text) if suffix != ".json" else json.loads(text)
     except (yaml.YAMLError, json.JSONDecodeError) as exc:
-        raise UniverseError(f"{p} is not a readable YAML/JSON document: {exc}") from exc
+        # The position, not the parser's message: that quotes the offending
+        # line, which in a file that is not a rules document is its content.
+        mark = getattr(exc, "problem_mark", None)
+        if isinstance(exc, json.JSONDecodeError):
+            where = f" (line {exc.lineno}, column {exc.colno})"
+        elif mark is not None:
+            where = f" (line {mark.line + 1}, column {mark.column + 1})"
+        else:
+            where = ""
+        raise UniverseError(
+            f"{p} is not a readable YAML/JSON document{where}."
+        ) from exc
     if data is None:
         raise UniverseError(f"{p} is empty.")
     return UniverseRules.from_dict(data, base_dir=p.parent)
@@ -729,7 +766,11 @@ def load_universe(
 
 
 def count_unresolved(
-    universe: Eligibility, index: Any, assets: Sequence[str]
+    universe: Eligibility,
+    index: Any,
+    assets: Sequence[str],
+    *,
+    execution_lag: int | None = None,
 ) -> tuple[int, int, tuple[str, ...]]:
     """How much of the run the collapse policy — not the rules — decides.
 
@@ -748,6 +789,9 @@ def count_unresolved(
         universe: The membership definition.
         index: The run's bars.
         assets: The return frame's columns, in order.
+        execution_lag: The run's lag, so the count reads the universe the way
+            the run will; see
+            :func:`~optimization_engine.universe.eligibility.point_in_time_mask`.
 
     Returns:
         ``(cells, bars, assets)`` — how many ``(bar, asset)`` cells the policy
@@ -757,8 +801,12 @@ def count_unresolved(
     Raises:
         UniverseError: If the universe's own axes cannot be read as dates.
     """
-    admitted = point_in_time_mask(universe, "include", index, assets)
-    refused = point_in_time_mask(universe, "exclude", index, assets)
+    admitted = point_in_time_mask(
+        universe, "include", index, assets, execution_lag=execution_lag
+    )
+    refused = point_in_time_mask(
+        universe, "exclude", index, assets, execution_lag=execution_lag
+    )
     disputed = admitted & (~refused)
     cells = int(disputed.to_numpy(dtype=bool).sum())
     bars = int(disputed.any(axis=1).sum())
