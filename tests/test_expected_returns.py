@@ -368,3 +368,45 @@ def test_the_realized_annualizer_is_still_the_one_for_realized_returns():
         "annualize_returns (realized) or expected_returns_from_history (μ)"
     )
     assert "annualize_returns(" in app_source
+
+
+@pytest.mark.parametrize("method", ["cvar", "cdar"])
+def test_tail_methods_compare_a_target_with_the_arithmetic_mean(method: str):
+    """CVaR and CDaR annualized the history as ``(1+m)^ppy − 1`` (review §2.5).
+
+    With no expected returns supplied they checked the return floor against
+    the compounded mean, which runs above the arithmetic one the rest of the
+    package uses. A 56.6% target, above the 49.4% best arithmetic mean, then
+    "solved" with a book whose arithmetic return was 45.8%. The floor now uses
+    ``expected_returns_from_history("mean")``, so the same target is out of
+    reach and the solve says so.
+    """
+    from optimization_engine.optimizers._cvxpy_helpers import SolverFailure
+    from optimization_engine.optimizers.cdar import CDaROptimizer
+    from optimization_engine.optimizers.cvar import CVaROptimizer
+
+    rng = np.random.default_rng(11)
+    n_obs = 400
+    a = rng.standard_normal(n_obs) * 0.006
+    a[rng.choice(n_obs, 12, replace=False)] -= 0.05
+    history = pd.DataFrame(
+        {
+            "A": a,
+            "B": rng.standard_normal(n_obs) * 0.012 + 0.0004,
+            "C": np.abs(rng.standard_normal(n_obs)) * 0.01 - 0.006,
+        },
+        index=pd.bdate_range("2020-01-01", periods=n_obs),
+    )
+    arithmetic = expected_returns_from_history(history, method="mean")
+    compounded = (1 + history.mean()) ** 252 - 1
+    target = float(arithmetic.max()) + 0.5 * float(compounded.max() - arithmetic.max())
+    assert arithmetic.max() < target < compounded.max(), "fixture drifted"
+
+    cls = CVaROptimizer if method == "cvar" else CDaROptimizer
+    optimizer = cls(returns=history, target_return=target)
+    with pytest.warns(UserWarning, match="historical means"):
+        np.testing.assert_allclose(optimizer._target_mu_vector(), arithmetic.values)
+    with pytest.warns(UserWarning):
+        with pytest.raises(SolverFailure) as raised:
+            optimizer.optimize()
+    assert raised.value.status == "infeasible"
