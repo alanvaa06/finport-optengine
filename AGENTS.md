@@ -132,6 +132,11 @@ optengine optimize --config c.yaml --sample --json
 optengine backtest --config c.yaml --sample --json
 ```
 
+`optimize`, `backtest` and `check` need exactly one data source — `--prices`,
+`--provider`, `--yahoo` or `--sample` — and exit 2 without one; there is no
+implicit sample panel any more. `data_source.synthetic` in the payload says
+whether the numbers describe a market at all.
+
 Every payload carries `schema_version`; check the major and refuse one you
 do not know. A command that fails before producing a result still emits JSON
 — an object with `error` and `exit_code` — so a caller never has to

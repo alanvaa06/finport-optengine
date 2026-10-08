@@ -94,6 +94,31 @@ def test_a_misspelt_config_key_is_exit_2_not_a_traceback(tmp_path, capsys):
     assert "Traceback" not in err
 
 
+def test_the_sample_panel_says_it_is_synthetic(feasible_config, capsys):
+    assert main(["check", "--config", str(feasible_config), "--sample"]) == 0
+    assert "synthetic" in capsys.readouterr().err
+
+
+def test_the_script_refuses_to_run_without_data(tmp_path):
+    """`scripts/run_optimization.py` carried the same silent fallback."""
+    import subprocess
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "run_optimization.py"),
+            "--config", str(EXAMPLE_CONFIG),
+            "--output", str(tmp_path / "report.xlsx"),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(tmp_path),
+    )
+    assert proc.returncode == 2, proc.stderr
+    assert "--sample" in proc.stderr
+    assert not (tmp_path / "report.xlsx").exists()
+
+
 def test_optimize_writes_a_report_with_provenance(feasible_config, tmp_path, capsys):
     out_path = tmp_path / "report.xlsx"
     assert (

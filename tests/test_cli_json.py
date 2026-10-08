@@ -261,6 +261,65 @@ def test_a_returned_failure_carries_its_reason(capsys, tmp_path):
     assert "no expected returns" in payload["error"]
 
 
+@pytest.mark.parametrize("command", ["optimize", "check", "backtest"])
+def test_no_data_source_is_refused_rather_than_filled_with_the_sample(capsys, command):
+    """Without --prices the commands used to solve on the synthetic panel.
+
+    `optimize --config c.yaml --json` exited 0 with plausible weights and no
+    word anywhere — stdout, stderr or payload — that none of it was market
+    data. A forgotten flag is the most likely way to get there.
+    """
+    code, payload = _run(capsys, [command, "--config", CONFIG, "--json"])
+    assert code == 2
+    assert "--prices" in payload["error"] and "--sample" in payload["error"]
+
+
+def test_two_data_sources_are_refused(capsys, tmp_path):
+    # --sample used to win silently over --prices, which is the same
+    # substitution reached by naming too much rather than too little.
+    csv = tmp_path / "prices.csv"
+    csv.write_text("date,A\n2024-01-01,1\n")
+    code, payload = _run(
+        capsys,
+        ["optimize", "--config", CONFIG, "--sample", "--prices", str(csv), "--json"],
+    )
+    assert code == 2
+    assert "--prices" in payload["error"] and "--sample" in payload["error"]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["check", "--config", CONFIG, "--sample", "--json"],
+        ["optimize", "--config", CONFIG, "--sample", "--json"],
+        ["backtest", "--config", CONFIG, "--sample",
+         "--lookback", "504", "--rebalance-every", "252", "--json"],
+    ],
+)
+def test_every_payload_names_its_data_source(capsys, argv):
+    code, payload = _run(capsys, argv)
+    assert code == 0
+    assert payload["data_source"] == {
+        "kind": "sample",
+        "synthetic": True,
+        "path": None,
+        "provider": None,
+        "identifiers": None,
+    }
+
+
+def test_a_price_file_is_named_as_the_source(capsys, tmp_path):
+    from optimization_engine.data.loader import sample_dataset
+
+    csv = tmp_path / "prices.csv"
+    sample_dataset(n_periods=400).to_csv(csv)
+    code, payload = _run(capsys, ["check", "--config", CONFIG, "--prices", str(csv), "--json"])
+    assert code == 0
+    assert payload["data_source"]["kind"] == "file"
+    assert payload["data_source"]["path"] == str(csv)
+    assert payload["data_source"]["synthetic"] is False
+
+
 def _refusal_argv(case: str, tmp_path: Path) -> list[str]:
     """A command line that ends in each of the refusals the CLI returns."""
     import yaml

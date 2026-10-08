@@ -45,7 +45,13 @@ import pandas as pd
 #: ``--json`` could not see the scenarios at all, which made the one number
 #: worth automating an alert on — the worst case — the one number the
 #: structured output omitted.
-SCHEMA_VERSION = "2.2"
+#:
+#: ``2.3`` adds ``data_source`` to the check, optimize and backtest payloads:
+#: which panel the numbers were computed on, and whether it is synthetic.
+#: The CLI used to fall back to the built-in sample when no price file was
+#: named, and nothing in the payload could tell those weights apart from
+#: weights on market data.
+SCHEMA_VERSION = "2.3"
 
 
 def _num(value: Any) -> float | None:
@@ -392,6 +398,7 @@ def optimization_payload(
     *,
     output_path: str | None = None,
     alignment: Any = None,
+    data_source: Any = None,
 ) -> dict[str, Any]:
     """The full result of one solve: weights, and what they rest on.
 
@@ -403,6 +410,8 @@ def optimization_payload(
             sentence per change made to the panel before it was
             differenced. Empty means the panel needed no changes, which
             is a different claim from "nobody looked".
+        data_source: Where the prices came from — see
+            :func:`data_source_payload`.
 
     Returns:
         A JSON-serialisable dict. ``weights`` maps asset name to weight;
@@ -444,6 +453,7 @@ def optimization_payload(
         # to become rectangular. A late-listing asset truncates every
         # other series, and that is invisible in the weights.
         "alignment": _strings(alignment),
+        "data_source": data_source_payload(data_source),
         "output_path": output_path,
     }
 
@@ -454,6 +464,7 @@ def check_payload(
     covariance: Any = None,
     *,
     alignment: Any = None,
+    data_source: Any = None,
 ) -> dict[str, Any]:
     """A pre-flight verdict: can this mandate be solved, and on what data.
 
@@ -471,6 +482,8 @@ def check_payload(
         covariance: Covariance diagnostics, when they were computed.
         alignment: The action log from
             :func:`~optimization_engine.data.quality.align_panel`.
+        data_source: Where the prices came from — see
+            :func:`data_source_payload`.
     """
     feas = feasibility_payload(feasibility)
     quality_errors = _strings(getattr(quality, "errors", None))
@@ -490,8 +503,36 @@ def check_payload(
         # describes what was done to it afterwards. Reading the first
         # without the second says what was wrong, not what was kept.
         "alignment": _strings(alignment),
+        "data_source": data_source_payload(data_source),
         "feasibility": feas,
         "covariance": covariance_diagnostics_payload(covariance),
+    }
+
+
+def data_source_payload(source: Any) -> dict[str, Any] | None:
+    """Which panel a result was computed on, in a fixed shape.
+
+    Args:
+        source: A mapping with ``kind`` — ``"file"``, ``"provider"``,
+            ``"yahoo"`` or ``"sample"`` — and ``synthetic``, plus whichever of
+            ``path``, ``provider`` and ``identifiers`` the kind has. ``None``
+            when the caller did not record a source.
+
+    Returns:
+        All five keys, ``null`` where the kind has no value, so a consumer
+        tests values rather than keys. ``synthetic`` is the one to branch on:
+        it is true for the built-in sample panel and for the ``sample``
+        provider, and a result computed on either describes no market.
+    """
+    if source is None:
+        return None
+    identifiers = source.get("identifiers")
+    return {
+        "kind": str(source["kind"]),
+        "synthetic": bool(source.get("synthetic", False)),
+        "path": None if source.get("path") is None else str(source["path"]),
+        "provider": None if source.get("provider") is None else str(source["provider"]),
+        "identifiers": None if identifiers is None else [str(i) for i in identifiers],
     }
 
 
@@ -519,6 +560,7 @@ def backtest_payload(
     tearsheet: Any = None,
     output_path: str | None = None,
     alignment: Any = None,
+    data_source: Any = None,
 ) -> dict[str, Any]:
     """What a simulated run of the process actually produced.
 
@@ -541,6 +583,8 @@ def backtest_payload(
             :func:`~optimization_engine.data.quality.align_panel`. A
             simulated track record that starts three years late because
             one asset listed late is not the same track record.
+        data_source: Where the prices came from — see
+            :func:`data_source_payload`.
     """
     meta = getattr(result, "meta", None)
     sheet_metadata = getattr(tearsheet, "metadata", None)
@@ -573,6 +617,7 @@ def backtest_payload(
         "degradations": _strings(getattr(meta, "degradations", None)),
         "notes": _notes(getattr(meta, "notes", None)),
         "alignment": _strings(alignment),
+        "data_source": data_source_payload(data_source),
         "metrics": metrics,
         # The tearsheet applies the configured shocks to the book the run
         # ended on, so this is the stress of what would actually be held

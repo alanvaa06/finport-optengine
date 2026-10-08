@@ -405,7 +405,7 @@ stderr, and turned into a code:
 | --- | --- |
 | `0` | Success |
 | `1` | The command ran and the answer is "no" — `check` found the data unusable, `ingest` completed but the panel is incomplete |
-| `2` | The command could not run, or the mandate cannot — a missing, unreadable or malformed config or price file, unresolvable benchmark, data error under `--strict`, infeasible constraints (including `check` finding the mandate impossible), solver failure, provider error |
+| `2` | The command could not run, or the mandate cannot — no data source named (or more than one), a missing, unreadable or malformed config or price file, unresolvable benchmark, data error under `--strict`, infeasible constraints (including `check` finding the mandate impossible), solver failure, provider error |
 
 The distinction is worth honouring in a script: `1` means the engine worked and
 is telling you something about the data, `2` means it never got as far as an

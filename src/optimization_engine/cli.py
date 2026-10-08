@@ -703,7 +703,13 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
                 )
     print(f"Wrote {out} ({len(sheets)} sheets)")
     _capture(
-        args, optimization_payload(run, output_path=str(out), alignment=alignment)
+        args,
+        optimization_payload(
+            run,
+            output_path=str(out),
+            alignment=alignment,
+            data_source=inputs.data_source,
+        ),
     )
     return 0
 
@@ -1049,7 +1055,8 @@ def _load_prices_for(args: argparse.Namespace):
     """Resolve the price panel from whichever legacy flag names it.
 
     ``--provider`` is handled by :func:`_prepare_inputs`, which needs the
-    whole ingest result rather than the prices alone.
+    whole ingest result rather than the prices alone. Exactly one source has
+    been named by the time this runs — :func:`_data_source` checked.
     """
     if getattr(args, "yahoo", None):
         if args.yahoo_start:
@@ -1057,9 +1064,71 @@ def _load_prices_for(args: argparse.Namespace):
                 args.yahoo, start=args.yahoo_start, end=args.yahoo_end
             )
         return load_prices_yahoo(args.yahoo, period=args.yahoo_period)
-    if args.sample or not args.prices:
+    if args.sample:
         return sample_dataset()
     return load_prices(args.prices, sheet_name=args.sheet)
+
+
+def _split_identifiers(raw: str | None) -> list[str]:
+    return [token for token in str(raw or "").replace(",", " ").split() if token]
+
+
+def _data_source(args: argparse.Namespace) -> dict[str, object]:
+    """The one panel this run reads, described the way the payload reports it.
+
+    A source has to be named. ``--sample`` used to be what a command fell
+    back to when ``--prices`` was missing, so a forgotten flag produced an
+    exit-0 allocation on synthetic data with nothing on any stream saying
+    so. Naming two is refused for the same reason: ``--sample`` silently won
+    over ``--prices``, which is the same substitution reached the other way.
+
+    Raises:
+        ValueError: When the command line names no source, or more than one.
+            The message lists the flags.
+    """
+    named = [
+        flag
+        for flag, present in (
+            ("--prices", getattr(args, "prices", None)),
+            ("--provider", getattr(args, "provider", None)),
+            ("--yahoo", getattr(args, "yahoo", None)),
+            ("--sample", getattr(args, "sample", False)),
+        )
+        if present
+    ]
+    if not named:
+        raise ValueError(
+            "No price data given. Pass --prices FILE, --provider NAME with "
+            "--identifiers, --yahoo TICKERS, or --sample for the built-in "
+            "synthetic panel."
+        )
+    if len(named) > 1:
+        raise ValueError(
+            f"Pass one data source, not {len(named)}: {', '.join(named)}. "
+            "It would otherwise be ambiguous which panel the result describes."
+        )
+    source: dict[str, object] = {
+        "kind": {"--prices": "file", "--provider": "provider", "--yahoo": "yahoo",
+                 "--sample": "sample"}[named[0]],
+        "synthetic": False,
+        "path": None,
+        "provider": None,
+        "identifiers": None,
+    }
+    if named[0] == "--prices":
+        source["path"] = args.prices
+    elif named[0] == "--yahoo":
+        source["identifiers"] = _split_identifiers(args.yahoo)
+    elif named[0] == "--provider":
+        source["provider"] = args.provider
+        source["identifiers"] = _split_identifiers(getattr(args, "identifiers", None))
+        source["path"] = getattr(args, "file_path", None) if args.provider == "file" else None
+        # The ingest layer has a synthetic provider of its own; it is no more
+        # market data than --sample is.
+        source["synthetic"] = args.provider == "sample"
+    else:
+        source["synthetic"] = True
+    return source
 
 
 @dataclass
@@ -1074,6 +1143,8 @@ class _Inputs:
     #: One sentence per change alignment made to the panel. Empty means
     #: nothing was dropped, which is a claim worth being able to make.
     alignment: list[str]
+    #: Where the prices came from, as :func:`_data_source` describes it.
+    data_source: dict[str, object]
 
 
 def _fail(args: argparse.Namespace, message: str, code: int = 2) -> int:
@@ -1119,6 +1190,18 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
         carried into the ``--json`` payload.
     """
     from optimization_engine.data.quality import align_panel, analyze_prices
+
+    try:
+        data_source = _data_source(args)
+    except ValueError as exc:
+        return _fail(args, str(exc))
+    if data_source["synthetic"]:
+        # On stderr, like the alignment log: under --json it is the only
+        # stream a person reads, and the payload carries the same fact.
+        print(
+            "  Data: a synthetic panel — the numbers below describe no market.",
+            file=sys.stderr,
+        )
 
     # Inside a handler, because a config that cannot be read is the most
     # ordinary input error there is. Outside one, a missing file or a
@@ -1246,6 +1329,7 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
         quality=quality,
         volumes=volumes,
         alignment=alignment,
+        data_source=data_source,
     )
 
 
@@ -1499,6 +1583,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
             tearsheet=sheet,
             output_path=str(out) if out is not None else None,
             alignment=alignment,
+            data_source=inputs.data_source,
         ),
     )
     return 0
@@ -1599,7 +1684,12 @@ def _cmd_check(args: argparse.Namespace) -> int:
             "the range needs a solver and none answered."
         )
 
-    _capture(args, check_payload(quality, report, diag, alignment=alignment))
+    _capture(
+        args,
+        check_payload(
+            quality, report, diag, alignment=alignment, data_source=inputs.data_source
+        ),
+    )
     if report.fatal_issues:
         print("\nNot ready to optimize.", file=sys.stderr)
         return 2

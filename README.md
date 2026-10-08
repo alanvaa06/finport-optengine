@@ -907,6 +907,13 @@ Four commands take `--json`: `optimize`, `backtest`, `check` and `describe`.
 Human narration moves to stderr, so stdout is exactly one parseable document
 and a pipeline can act on a result without scraping a formatted table.
 
+`optimize`, `backtest` and `check` need exactly one data source — `--prices`,
+`--provider`, `--yahoo` or `--sample` — and exit 2 without one. They used to
+fall back to the synthetic sample panel when `--prices` was forgotten, which
+produced a plausible allocation on data that describes no market. Every
+payload names its source under `data_source`, with `synthetic` as the field
+to branch on.
+
 ```bash
 optengine describe risk_parity --json | jq '{name, requires, supports}'
 ```

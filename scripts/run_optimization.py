@@ -44,8 +44,14 @@ def main() -> int:
     parser.add_argument("--frontier-points", type=int, default=25)
     args = parser.parse_args()
 
+    # One source, named. Falling back to the synthetic panel when --prices was
+    # forgotten wrote a report on data that describes no market; see
+    # `cli._data_source` for the same rule on the command line.
+    if bool(args.sample) == bool(args.prices):
+        print("Pass exactly one of --prices FILE or --sample.", file=sys.stderr)
+        return 2
     config = load_config(args.config)
-    if args.sample or args.prices is None:
+    if args.sample:
         prices = sample_dataset()
     else:
         prices = load_prices(args.prices, sheet_name=args.sheet)
