@@ -175,21 +175,18 @@ class MaxDiversificationOptimizer(BaseOptimizer):
         """Mandate items the projection fallback cannot carry, in a fixed order.
 
         The fallback re-imposes the mandate by solving ``min ‖x − w‖²`` subject
-        to it, so most of it survives. Two things do not, and naming them here
+        to it, so most of it survives. One thing does not, and naming it here
         saves the reader a trip through ``_bounds.py``:
 
         * ``max_tracking_error`` is stripped unconditionally
           (``_bounds._without_turnover``), because the projection is not handed
           a covariance matrix and active risk cannot be written from weights
           alone.
-        * ``leverage`` survives only on the projection's CVXPY branch, taken
-          when a bucket budget or an active-share cap is set. Without either,
-          the projection clips and redistributes, which is blind to gross
-          exposure.
 
-        ``max_active_share`` is deliberately absent: setting it is exactly what
-        forces the CVXPY branch, so the projection *does* honour it. Listing it
-        would be the same kind of false claim this diagnostic exists to stop. A
+        ``max_active_share`` and ``leverage`` are deliberately absent: setting
+        either one where it can bind is what sends the projection down its
+        CVXPY branch, so the projection *does* honour them. Listing them would
+        be the same kind of false claim this diagnostic exists to stop. A
         turnover budget is dropped too, but the ray-space solve never carried
         it either, so it is already named in ``ignored_constraints``.
 
@@ -197,13 +194,7 @@ class MaxDiversificationOptimizer(BaseOptimizer):
             The constraint field names, empty when the projection carried the
             whole mandate.
         """
-        constraints = self.constraints
         dropped: list[str] = []
-        if constraints.max_tracking_error is not None:
+        if self.constraints.max_tracking_error is not None:
             dropped.append("max_tracking_error")
-        projection_is_exact = (
-            constraints.has_layer_limits or constraints.max_active_share is not None
-        )
-        if constraints.leverage is not None and not projection_is_exact:
-            dropped.append("leverage")
         return dropped

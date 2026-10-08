@@ -126,8 +126,9 @@ def test_max_div_dropped_constraints_names_only_what_projection_loses(cov):
     )
     assert optimizer._dropped_by_projection() == ["max_tracking_error"]
 
-    # No active-share cap and no bucket budget: the projection clips and
-    # redistributes, which is blind to gross exposure.
+    # No active-share cap and no bucket budget: the projection used to clip
+    # and redistribute, blind to gross exposure. A cap that can bind now sends
+    # it down the exact path (review item O15), so leverage is not dropped.
     bare = MaxDiversificationOptimizer(
         cov_matrix=cov,
         constraints=PortfolioConstraints(
@@ -136,7 +137,7 @@ def test_max_div_dropped_constraints_names_only_what_projection_loses(cov):
             leverage=1.1,
         ),
     )
-    assert bare._dropped_by_projection() == ["leverage"]
+    assert bare._dropped_by_projection() == []
 
 
 def test_max_div_refuses_an_inaccurate_answer_instead_of_projecting(cov, monkeypatch):
