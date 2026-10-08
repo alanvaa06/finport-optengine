@@ -5,13 +5,13 @@ That only helps if the refusal is legible, so this is the contract: every
 exception the library raises on purpose, what causes it, whether it is
 recoverable, and what to catch.
 
-There are twenty-five exception classes. You almost never want to catch all of
+There are twenty-seven exception classes. You almost never want to catch all of
 them, because they mean three different things:
 
 | It means | Do this | Examples |
 | --- | --- | --- |
-| **Your inputs are wrong** — a config, a universe, a constraint set | Fix the input. Retrying is pointless. | `SpecValidationError`, `LayerConfigurationError`, `BenchmarkError`, `ConfigurationError`, `SweepValidationError`, `StressError`, `UniverseError` |
-| **Your mandate is impossible** — the constraints have no solution, or this method cannot meet them | Relax something, or pick another method. The exception says which. | `InfeasibleConstraintsError`, `InfeasibleBoundsError`, `SolverFailure`, `MandateViolationError` |
+| **Your inputs are wrong** — a config, a universe, a constraint set | Fix the input. Retrying is pointless. | `SpecValidationError`, `LayerConfigurationError`, `BenchmarkError`, `ConfigurationError`, `SweepValidationError`, `StressError`, `UniverseError`, `NonPSDCovarianceError` |
+| **Your mandate is impossible** — the constraints have no solution, or this method cannot meet them | Relax something, or pick another method. The exception says which. | `InfeasibleConstraintsError`, `InfeasibleBoundsError`, `SolverFailure`, `MandateViolationError`, `NoPositiveExcessReturnError` |
 | **The world got in the way** — network, credentials, a vendor's bad day | Retry, or fix the environment. | `ProviderTransientError`, `ProviderCredentialsError`, `MissingDependencyError` |
 
 Seven error types are exported from the package root — `IngestError`,
@@ -109,11 +109,13 @@ point: an invalid mandate should cost you a millisecond, not a walk-forward.
 | `LayerConfigurationError` | `ConstraintLayer`, `layer_from_mapping`, `effective_layers` | An unknown `basis`; a layer expressing limits as a share of its parent while naming no parent; a named parent layer that does not exist; buckets that sit in more than one parent bucket, so "30% of the parent" has no single meaning; a layer entry that is neither a mapping nor a `ConstraintLayer` |
 | `BenchmarkError` | `BenchmarkSpec` construction, `resolve_benchmark` | An unknown `kind` or `rebalance` rule; `single_asset` with no asset, or one outside the universe; `custom_weights` with no vector, or naming assets outside the universe; weights summing to zero under `normalize`; an empty universe |
 | `FrequencyMismatchError` | `resolve_periods_per_year`, and through it the CLI's `check`/`optimize`/`backtest` (exit 2) and the MCP tools | A `periods_per_year` the config states, or an ingest interval, that the spacing of the panel's dates contradicts — `periods_per_year: 252` on month-end prices. A value the config does *not* state is not a contradiction: the dates replace it |
-| `ConfigurationError` | `optimizer_factory` | The method requires expected returns, a covariance matrix or a returns frame and got none; a benchmark-relative method with no benchmark **weights**; a tracking-error or active-share budget set without benchmark weights; a malformed Black-Litterman view |
+| `ConfigurationError` | `optimizer_factory` | The method requires expected returns, a covariance matrix or a returns frame and got none; a benchmark-relative method with no benchmark **weights**; a tracking-error or active-share budget set without benchmark weights; a malformed Black-Litterman view; Black-Litterman risk-aversion calibration with no market return to calibrate against |
 | `HoldoutViolationError` | `assert_within_holdout`, on every gated path | A frame handed to a gated run carries a row past the holdout boundary. A guardrail against look-ahead, not a bug in your data |
+| `NonPSDCovarianceError` | `BaseOptimizer.optimize`, before any solve | A covariance whose smallest eigenvalue is below −1e-8 of its trace, so some portfolios would have negative variance. The engine's estimators repair their output with `nearest_psd`, so only a matrix handed to an optimizer directly gets here; the message names the repair. `exc.min_eigenvalue` and `exc.trace` carry the numbers |
 
 `SpecValidationError`, `SweepValidationError`, `LayerConfigurationError`,
-`BenchmarkError` and `ConfigurationError` subclass `ValueError`;
+`BenchmarkError`, `ConfigurationError`, `FrequencyMismatchError` and
+`NonPSDCovarianceError` subclass `ValueError`;
 `HoldoutViolationError` subclasses `RuntimeError`.
 
 Two adjacent cases raise plain builtins rather than a named type: bounds with
@@ -273,6 +275,14 @@ not a trade) and a **tracking-error budget** (a risk statement, not a weights
 one). An audit that ran without a covariance matrix could not check the second
 at all, and comes back clean because it did not look.
 
+The audit does not check a return or volatility target, because a method that
+takes no target never imposed one. `ignored_constraints` says so instead: it
+names `target_return` or `target_volatility` whenever they are set on a method
+that does not take them (max-Sharpe, risk parity, the hierarchical and naive
+methods), and `fully_invested` when an open budget is ignored (max-Sharpe,
+max-diversification, risk parity). The pre-flight leaves such a target out, so
+it is never a fatal finding against a solve that does not read it.
+
 ## Infeasible mandates
 
 The difference between these four matters.
@@ -343,6 +353,16 @@ The most common cause that looks like a solver bug and is not: a
 tracking-error or active-share budget. A benchmark holding an asset your
 bounds cap below its index weight sets a *floor* on tracking error that no
 allocation can go under. Raise the limit or relax the bound.
+
+**`NoPositiveExcessReturnError`** is max-Sharpe's own, and a `ValueError`. It
+means no allocation the constraints allow earns more than the risk-free rate,
+so every Sharpe ratio on offer is at or below zero and there is no tangency
+portfolio. It is decided over the feasible set, not asset by asset: a
+long-only box that caps the only asset above cash raises it (and says what the
+best feasible excess return is, on `exc.best_excess_return`), while a
+long-short book whose assets all trail cash does not, when a spread between
+them beats it. NCO catches it inside a cluster and solves that cluster for
+minimum variance instead, naming it in `extras["nco_min_variance_fallback"]`.
 
 **`MandateViolationError`** is the fourth, and the only one raised *after* a
 successful solve. It means the answer arrived and does not comply, and you had

@@ -1302,7 +1302,7 @@ The narrative above says what the engine is for. Three documents say what it
 | | |
 | --- | --- |
 | **API reference** | Every one of the 168 exported names with its signature, parameters, units and errors — generated from the docstrings by `scripts/build_api_docs.py`, so it cannot drift from the code. Build it locally with `pip install "finport-optengine[docs]"` then `python scripts/build_api_docs.py`; CI publishes it to GitHub Pages on every push to `main`. |
-| [`docs/ERRORS.md`](https://github.com/alanvaa06/finport-optengine/blob/main/docs/ERRORS.md) | The refusal contract: all twenty-four exception types, which to catch, which are recoverable, the CLI's exit codes, and the failures that are *reported* rather than raised — degraded cost models, skipped identifiers, post-solve constraint breaches. |
+| [`docs/ERRORS.md`](https://github.com/alanvaa06/finport-optengine/blob/main/docs/ERRORS.md) | The refusal contract: all twenty-seven exception types, which to catch, which are recoverable, the CLI's exit codes, and the failures that are *reported* rather than raised — degraded cost models, skipped identifiers, post-solve constraint breaches. |
 | [`AGENTS.md`](https://github.com/alanvaa06/finport-optengine/blob/main/AGENTS.md) | The API map and the `--json` CLI contract, written for a caller who wants the shortest correct program. |
 
 ## Where the methods come from

@@ -337,6 +337,182 @@ def test_nco_survives_a_long_short_mandate(blocked_cov: pd.DataFrame):
     assert result.is_compliant, result.violations
 
 
+def _two_block_cov() -> pd.DataFrame:
+    """Two tight pairs whose unconstrained intra-cluster books lever past ±1."""
+    names = ["p", "q", "r", "s"]
+    corr = np.array(
+        [
+            [1.0, 0.95, 0.1, 0.1],
+            [0.95, 1.0, 0.1, 0.1],
+            [0.1, 0.1, 1.0, 0.9],
+            [0.1, 0.1, 0.9, 1.0],
+        ]
+    )
+    vols = np.array([0.10, 0.20, 0.12, 0.30])
+    return pd.DataFrame(np.outer(vols, vols) * corr, index=names, columns=names)
+
+
+def _mlam_nco(cov: pd.DataFrame, clusters: list[list[str]], mu=None) -> np.ndarray:
+    """López de Prado's NCO, *MLAM* snippet 7.6, with its closed-form ``optPort``."""
+
+    def opt_port(sigma: np.ndarray, m: np.ndarray | None) -> np.ndarray:
+        raw = np.linalg.inv(sigma) @ (np.ones(len(sigma)) if m is None else m)
+        return raw / raw.sum()
+
+    loadings = pd.DataFrame(0.0, index=cov.index, columns=range(len(clusters)))
+    for k, members in enumerate(clusters):
+        sub_mu = None if mu is None else mu.loc[members].values
+        loadings.loc[members, k] = opt_port(cov.loc[members, members].values, sub_mu)
+    reduced = loadings.T.values @ cov.values @ loadings.values
+    reduced_mu = None if mu is None else loadings.T.values @ mu.values
+    return loadings.values @ opt_port(reduced, reduced_mu)
+
+
+@pytest.mark.parametrize("objective", ["min_variance", "max_sharpe"])
+def test_nco_long_short_layers_carry_no_hidden_box(objective: str):
+    """A long-short NCO is the reference NCO when the mandate does not bind.
+
+    The sub-problems were built with no bounds, which ``get_bounds`` reads as
+    the long-short default of (−1, 1): a box the mandate never set. Inside a
+    tight pair the unconstrained minimum-variance book is 1.75 long and 0.75
+    short, so under a (−10, 10) mandate the engine returned [0.6, 0, 0.4, 0]
+    against the snippet's [1.155, −0.495, 0.495, −0.155] — with no violation
+    and a clean audit, because the clipping happened where nothing audits.
+    """
+    cov = _two_block_cov()
+    mu = pd.Series([0.05, 0.06, 0.04, 0.07], index=cov.index)
+    constraints = PortfolioConstraints(
+        long_only=False, bounds={a: (-10.0, 10.0) for a in cov.index}
+    )
+    result = NCOOptimizer(
+        cov_matrix=cov,
+        expected_returns=mu if objective == "max_sharpe" else None,
+        constraints=constraints,
+        objective=objective,
+        n_clusters=2,
+        detone_for_clustering=False,
+    ).optimize()
+
+    clusters = [["p", "q"], ["r", "s"]]
+    assert sorted(sorted(m) for m in result.extras["nco_clusters"].values()) == clusters
+    reference = _mlam_nco(cov, clusters, mu if objective == "max_sharpe" else None)
+
+    np.testing.assert_allclose(result.weights.values, reference, atol=1e-6)
+    assert np.abs(result.weights.values).max() > 1.0, "the reference levers past 1"
+    assert result.extras["projection_distance"] < 1e-6
+    assert result.is_compliant, result.violations
+
+
+def test_nco_max_sharpe_survives_a_cluster_that_trails_cash():
+    """One cluster entirely below the risk-free rate is not a failed solve.
+
+    A bond pair at 1% and 1.5% against a 2% rate made the intra-cluster
+    max-Sharpe raise "Every expected return is at or below the risk-free
+    rate", and NCO with it — while plain max-Sharpe on the same inputs answers
+    [0.61, 0.39, 0, 0]. Inside such a cluster there is nothing to maximize, so
+    it is solved for minimum variance, and the inter-cluster layer decides how
+    much of it to hold. The substitution is recorded, not silent.
+    """
+    names = ["e1", "e2", "b1", "b2"]
+    corr = np.array(
+        [[1, 0.8, 0, 0], [0.8, 1, 0, 0], [0, 0, 1, 0.8], [0, 0, 0.8, 1]], dtype=float
+    )
+    vols = np.array([0.15, 0.18, 0.05, 0.06])
+    cov = pd.DataFrame(np.outer(vols, vols) * corr, index=names, columns=names)
+    mu = pd.Series([0.08, 0.09, 0.01, 0.015], index=names)
+
+    with pytest.warns(UserWarning, match="minimum variance"):
+        result = NCOOptimizer(
+            cov_matrix=cov,
+            expected_returns=mu,
+            objective="max_sharpe",
+            risk_free_rate=0.02,
+            n_clusters=2,
+            detone_for_clustering=False,
+        ).optimize()
+
+    clusters = result.extras["nco_clusters"]
+    bonds = next(label for label, members in clusters.items() if "b1" in members)
+    fallback = result.extras["nco_min_variance_fallback"]
+    assert list(fallback) == [bonds]
+    assert "risk-free" in fallback[bonds]
+    assert result.weights.sum() == pytest.approx(1.0, abs=1e-9)
+    assert result.weights[["e1", "e2"]].sum() > 0.5
+
+
+def test_nco_max_sharpe_falls_back_where_a_cluster_has_no_finite_tangency():
+    """Long-short, a pair with ``1'Σ⁻¹(μ − rf) < 0`` has a supremum, not a maximum.
+
+    Once the hidden (−1, 1) box was removed from the sub-problems, that
+    cluster's max-Sharpe raises ``unbounded``. Taking the cluster's minimum
+    variance book keeps NCO answering, and says which cluster it did it for.
+    The second pair is quiet enough that the layer across clusters still has
+    a finite tangency.
+    """
+    names = ["p", "q", "r", "s"]
+    corr = np.array(
+        [
+            [1.0, 0.95, 0.1, 0.1],
+            [0.95, 1.0, 0.1, 0.1],
+            [0.1, 0.1, 1.0, 0.5],
+            [0.1, 0.1, 0.5, 1.0],
+        ]
+    )
+    vols = np.array([0.10, 0.20, 0.03, 0.04])
+    cov = pd.DataFrame(np.outer(vols, vols) * corr, index=names, columns=names)
+    mu = pd.Series([0.03, 0.08, 0.04, 0.05], index=names)
+    constraints = PortfolioConstraints(
+        long_only=False, bounds={a: (-10.0, 10.0) for a in names}
+    )
+    with pytest.warns(UserWarning, match="minimum variance"):
+        result = NCOOptimizer(
+            cov_matrix=cov,
+            expected_returns=mu,
+            constraints=constraints,
+            objective="max_sharpe",
+            n_clusters=2,
+            detone_for_clustering=False,
+        ).optimize()
+
+    fallback = result.extras["nco_min_variance_fallback"]
+    pair = next(
+        label for label, members in result.extras["nco_clusters"].items() if "p" in members
+    )
+    assert list(fallback) == [pair]
+    assert "unbounded" in fallback[pair]
+    assert result.weights.sum() == pytest.approx(1.0, abs=1e-9)
+    assert result.is_compliant, result.violations
+
+
+def test_nco_max_sharpe_names_an_unbounded_inter_cluster_layer():
+    """Across clusters there is no fallback, and the advice has to fit NCO.
+
+    The generic "add per-asset bounds" would send the reader to a box NCO
+    applies only to the combined book, never inside a layer.
+    """
+    from optimization_engine.optimizers._cvxpy_helpers import SolverFailure
+
+    cov = _two_block_cov()
+    mu = pd.Series([0.01, 0.05, 0.04, 0.07], index=cov.index)
+    constraints = PortfolioConstraints(
+        long_only=False, bounds={a: (-10.0, 10.0) for a in cov.index}
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(SolverFailure) as raised:
+            NCOOptimizer(
+                cov_matrix=cov,
+                expected_returns=mu,
+                constraints=constraints,
+                objective="max_sharpe",
+                n_clusters=2,
+                detone_for_clustering=False,
+            ).optimize()
+
+    assert raised.value.status == "unbounded"
+    assert "objective='min_variance'" in str(raised.value)
+
+
 def test_nco_refuses_a_layer_whose_weights_net_to_zero(blocked_cov: pd.DataFrame):
     """A cancelled-out cluster is named, not quietly folded into the book.
 

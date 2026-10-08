@@ -256,3 +256,32 @@ def test_bl_valid_views_still_solve(cov: pd.DataFrame, market: pd.Series) -> Non
     assert float(weights.sum()) == pytest.approx(1.0, abs=1e-6)
     assert weights["AAPL"] > float(market["AAPL"])
     assert prior_cov.equals(cov)
+
+
+# ---------------------------------------------------------------------------
+# (c) Risk-aversion calibration with nothing to calibrate against
+# ---------------------------------------------------------------------------
+
+
+def test_bl_calibration_without_a_market_return_is_refused(cov: pd.DataFrame) -> None:
+    """``calibrate_risk_aversion=True`` alone used to fall back to δ = 2.5.
+
+    Calibration implies δ from the market's own Sharpe ratio, so it needs the
+    market's expected return. Without one the solve quietly used the hand-set
+    default the flag exists to replace, and reported no ``implied_risk_aversion``
+    — the caller asked for a calibrated prior and got the uncalibrated one.
+    """
+    from optimization_engine.config import EngineConfig, OptimizerSpec
+    from optimization_engine.optimizers import ConfigurationError
+    from optimization_engine.optimizers.factory import effective_expected_returns
+
+    with pytest.raises(ConfigurationError, match="market_return"):
+        BlackLittermanOptimizer(cov_matrix=cov, calibrate_risk_aversion=True)
+
+    # The pre-flight builds the same posterior without an optimizer, so it
+    # refuses the same config rather than previewing a prior the solve rejects.
+    cfg = EngineConfig(
+        optimizer=OptimizerSpec(name="black_litterman", bl_calibrate_risk_aversion=True)
+    )
+    with pytest.raises(ConfigurationError, match="market_return"):
+        effective_expected_returns(cfg, cov)

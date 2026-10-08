@@ -29,7 +29,7 @@ from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import squareform
 
 from optimization_engine.optimizers._bounds import project_to_constraints
-from optimization_engine.optimizers.base import BaseOptimizer
+from optimization_engine.optimizers.base import BaseOptimizer, zero_variance_assets
 
 LINKAGE_METHODS = ("single", "average", "complete", "ward")
 
@@ -143,13 +143,13 @@ class HRPOptimizer(BaseOptimizer):
             )
 
         cov = self.cov_matrix
-        std = np.sqrt(np.diag(cov.values))
-        if not (std > 0).all():
-            zero = [a for a, s in zip(cov.columns, std) if s <= 0]
+        zero = zero_variance_assets(list(cov.columns), np.diag(cov.values))
+        if zero:
             raise ValueError(
                 f"Zero-variance asset(s) {zero}: the correlation distance is "
                 "undefined. Drop them from the universe."
             )
+        std = np.sqrt(np.diag(cov.values))
         corr = cov.values / np.outer(std, std)
         corr = np.clip(corr, -1.0, 1.0)
         corr_df = pd.DataFrame(corr, index=cov.index, columns=cov.columns)

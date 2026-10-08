@@ -9,8 +9,9 @@ unconstrained answer into the mandate. Two routines do that here:
   together. Closest matters: it keeps as much of the method's own answer as
   the mandate allows.
 * :func:`project_to_bounds_iterated` handles per-asset bounds and the budget
-  only, by clipping and redistributing. It is the cheaper path taken when no
-  layered budgets are set, and it cannot see them at all.
+  only, by clipping and redistributing. It is the cheaper path taken when
+  nothing else is set — no layered budget, no active-share cap, no gross cap
+  that can bind, and a budget that must be met — and it cannot see the rest.
 """
 
 from __future__ import annotations
@@ -143,8 +144,22 @@ def project_to_constraints(
 
     has_groups = constraints.has_layer_limits
     has_active_share = constraints.max_active_share is not None
-    if not (has_groups or has_active_share):
-        projected = project_to_bounds_iterated(w, lb, ub)
+    # A gross cap cannot bind on a fully-invested book with no negative floor:
+    # its gross exposure is exactly one. Anywhere else clip-and-redistribute
+    # is blind to it, and the exact path below has to take it.
+    leverage_binds = constraints.leverage is not None and not (
+        constraints.fully_invested
+        and (lb >= 0).all()
+        and float(constraints.leverage) >= 1.0
+    )
+    if not (has_groups or has_active_share or leverage_binds):
+        if constraints.fully_invested:
+            projected = project_to_bounds_iterated(w, lb, ub)
+        else:
+            # No budget to meet, so the closest point in the box is the
+            # clipped vector. Redistributing toward a unit budget here is what
+            # raised on a satisfiable open-budget mandate (review item O15).
+            projected = np.clip(w, lb, ub)
         return projected, float(np.abs(projected - w).sum()) / 2.0
 
     try:

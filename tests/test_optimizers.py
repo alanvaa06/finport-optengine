@@ -196,6 +196,141 @@ def test_inverse_vol_still_solves_a_healthy_panel(returns: pd.DataFrame):
     assert (weights > 0).all()
 
 
+def _indefinite_cov() -> pd.DataFrame:
+    """ρ(a,b) = ρ(b,c) = 0.9 with ρ(a,c) = −0.9: no joint distribution has these."""
+    names = ["a", "b", "c"]
+    corr = np.array([[1.0, 0.9, -0.9], [0.9, 1.0, 0.9], [-0.9, 0.9, 1.0]])
+    vol = np.array([0.10, 0.20, 0.15])
+    return pd.DataFrame(np.outer(vol, vol) * corr, index=names, columns=names)
+
+
+def test_an_indefinite_covariance_used_to_solve_to_a_negative_variance():
+    """The defect itself, pinned so the refusal below has a reason on record.
+
+    ``cp.psd_wrap`` tells CVXPY to trust the matrix rather than check it. On
+    this one the long-short minimum-variance solve came back ``optimal`` at
+    ``w = [1, −1, 1]``, where ``w'Σw = −0.0445`` — reported as zero volatility,
+    because the base class floors the variance at zero before rooting it.
+    """
+    from optimization_engine.optimizers.base import NonPSDCovarianceError
+    from optimization_engine.optimizers.mean_variance import MinVarianceOptimizer
+
+    cov = _indefinite_cov()
+    w = np.array([1.0, -1.0, 1.0])
+    assert float(w @ cov.values @ w) == pytest.approx(-0.0445)
+
+    from optimization_engine.optimizers.base import PortfolioConstraints
+
+    optimizer = MinVarianceOptimizer(
+        cov_matrix=cov,
+        constraints=PortfolioConstraints(
+            long_only=False, bounds={a: (-1.0, 1.0) for a in cov.index}
+        ),
+    )
+    with pytest.raises(NonPSDCovarianceError, match="eigenvalue") as raised:
+        optimizer.optimize()
+    assert raised.value.min_eigenvalue == pytest.approx(
+        float(np.linalg.eigvalsh(cov.values)[0])
+    )
+    assert "nearest_psd" in str(raised.value)
+
+
+@pytest.mark.parametrize("name", available_optimizers())
+def test_every_optimizer_refuses_an_indefinite_covariance(name: str):
+    """The check lives in ``BaseOptimizer.optimize``, so no method can skip it.
+
+    The engine's own estimators repair an indefinite estimate with
+    ``nearest_psd`` before any optimizer sees it, which is why only a caller of
+    the optimizers directly could hand one over. Repairing it again here would
+    solve a different matrix from the one passed, by an amount nobody chose;
+    refusing names the problem and the one-line repair.
+    """
+    from optimization_engine.optimizers.base import NonPSDCovarianceError
+    from optimization_engine.optimizers.factory import optimizer_factory
+
+    cov = _indefinite_cov()
+    rng = np.random.default_rng(0)
+    history = pd.DataFrame(
+        rng.normal(0.0004, 0.01, size=(300, 3)), columns=cov.columns
+    )
+    cfg = EngineConfig(
+        optimizer=OptimizerSpec(name=name),
+        benchmark_weights={a: 1 / 3 for a in cov.columns},
+    )
+    optimizer = optimizer_factory(
+        cfg,
+        cov,
+        expected_returns=pd.Series([0.05, 0.08, 0.06], index=cov.columns),
+        returns=history,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(NonPSDCovarianceError):
+            optimizer.optimize()
+
+
+def test_a_covariance_on_the_psd_boundary_still_solves(returns: pd.DataFrame):
+    """Eigenvalues at −1e-18 are rounding, not indefiniteness.
+
+    Fewer observations than assets make the sample covariance singular, and
+    the clipped estimate carries eigenvalues a few ulps either side of zero.
+    The check is relative to the matrix's own trace, so that is not refused.
+    """
+    from optimization_engine.optimizers.mean_variance import MinVarianceOptimizer
+
+    cov = covariance_matrix(returns.iloc[:8], method="sample")
+    assert len(cov) > 8
+    assert np.linalg.eigvalsh(cov.values)[0] < 1e-12
+    weights = MinVarianceOptimizer(cov_matrix=cov).optimize().weights
+    assert weights.sum() == pytest.approx(1.0, abs=1e-6)
+
+
+@pytest.mark.parametrize("name", ["inverse_vol", "hrp", "herc", "nco", "max_diversification"])
+def test_a_constant_column_is_zero_variance_even_with_rounding(name: str):
+    """A constant series is not low-risk; its sample variance is rounding.
+
+    A cash column at a flat 0.01% a day has sample variance 1.86e-37, not 0,
+    so the ``σ > 0`` guards let it through: inverse volatility and HRP put
+    100% of the book in it, against the 0.7.0 changelog's "inverse volatility
+    refuses a zero-variance asset". The guards are now relative to the largest
+    variance in the matrix, so rounding residue counts as zero and a genuinely
+    quiet asset does not.
+    """
+    from optimization_engine.optimizers.factory import optimizer_factory
+
+    rng = np.random.default_rng(1)
+    history = pd.DataFrame(
+        rng.standard_normal((500, 4)) * 0.01 + 0.0004,
+        columns=["w", "x", "y", "z"],
+        index=pd.bdate_range("2020-01-01", periods=500),
+    )
+    history["cash"] = 0.0001
+    cov = covariance_matrix(history, method="sample")
+    assert 0.0 < cov.loc["cash", "cash"] < 1e-30, "fixture no longer rounds"
+
+    optimizer = optimizer_factory(
+        EngineConfig(optimizer=OptimizerSpec(name=name)), cov, returns=history
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(ValueError, match="(?i)zero-variance") as raised:
+            optimizer.optimize()
+    assert "cash" in str(raised.value)
+
+
+def test_a_quiet_asset_is_not_mistaken_for_a_constant_one(returns: pd.DataFrame):
+    """The sample panel's Cash line has 0.5% volatility and must still be held."""
+    from optimization_engine.optimizers.hrp import HRPOptimizer
+    from optimization_engine.optimizers.naive import InverseVolatilityOptimizer
+
+    cov = covariance_matrix(returns, method="sample")
+    quiet = cov.values.diagonal().argmin()
+    assert cov.values.diagonal()[quiet] < 1e-3 * cov.values.diagonal().max()
+    for optimizer in (InverseVolatilityOptimizer, HRPOptimizer):
+        weights = optimizer(cov_matrix=cov).optimize().weights
+        assert weights.iloc[quiet] > 0.0
+
+
 def test_cvar_extras_keys(returns: pd.DataFrame, baseline_config: EngineConfig):
     """``√ppy`` scaling is reported under a name that says what it is.
 
@@ -373,6 +508,90 @@ def test_factory_warns_on_incompatible_target_return(returns, baseline_config, c
     with caplog.at_level(logging.WARNING):
         run_engine(returns, cfg)
     assert any("target_return" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("name", "target"),
+    [("max_sharpe", {"target_return": 0.50}), ("risk_parity", {"target_volatility": 0.001})],
+)
+def test_an_ignored_target_is_recorded_and_not_preflighted(
+    returns, baseline_config, name: str, target: dict
+):
+    """A target the method ignores is said to be ignored, and is not judged.
+
+    Max-Sharpe asked for 9.5% delivered 7.19% and risk parity asked for 2%
+    volatility delivered 7.18%, with only a log line to say so: nothing in
+    ``extras``, nothing in the violations. Meanwhile the pre-flight validated
+    the target the solve would ignore, so an unreachable one was a fatal
+    finding and ``raise_on_infeasible`` refused a solve that never looks at it.
+    """
+    cfg = EngineConfig(
+        expected_returns=baseline_config.expected_returns,
+        bounds=baseline_config.bounds,
+        optimizer=OptimizerSpec(name=name, risk_free_rate=0.0, **target),
+    )
+
+    run = run_engine(returns, cfg, raise_on_infeasible=True)
+
+    (field,) = target
+    assert field in run.result.extras["ignored_constraints"]
+    assert not [i for i in run.feasibility.issues if "target" in i.code]
+
+
+@pytest.mark.parametrize("name", ["max_sharpe", "risk_parity"])
+def test_an_ignored_target_is_recorded_on_the_direct_api_too(returns, name: str):
+    """The record comes from the optimizer, not only from the config path."""
+    from optimization_engine.optimizers.base import PortfolioConstraints
+    from optimization_engine.optimizers.mean_variance import MaxSharpeOptimizer
+    from optimization_engine.optimizers.risk_parity import RiskParityOptimizer
+
+    cov = covariance_matrix(returns, method="sample")
+    mu = pd.Series(0.06, index=cov.columns) + np.linspace(0, 0.04, len(cov))
+    constraints = PortfolioConstraints(target_return=0.095, target_volatility=0.02)
+    if name == "max_sharpe":
+        optimizer = MaxSharpeOptimizer(
+            expected_returns=mu, cov_matrix=cov, constraints=constraints
+        )
+    else:
+        optimizer = RiskParityOptimizer(cov_matrix=cov, constraints=constraints)
+
+    ignored = optimizer.optimize().extras["ignored_constraints"]
+    assert {"target_return", "target_volatility"} <= set(ignored)
+
+
+def test_risk_parity_records_that_it_ignores_an_open_budget(returns):
+    """Risk parity normalizes to one whatever the budget says, and now says so."""
+    from optimization_engine.optimizers.base import PortfolioConstraints
+    from optimization_engine.optimizers.risk_parity import RiskParityOptimizer
+
+    cov = covariance_matrix(returns, method="sample")
+    optimizer = RiskParityOptimizer(
+        cov_matrix=cov, constraints=PortfolioConstraints(fully_invested=False)
+    )
+    with pytest.warns(UserWarning, match="fully_invested=False"):
+        result = optimizer.optimize()
+    assert "fully_invested" in result.extras["ignored_constraints"]
+    assert result.weights.sum() == pytest.approx(1.0, abs=1e-6)
+
+
+def test_min_variance_says_how_much_an_open_budget_invests(returns):
+    """With no budget the lowest-variance book is close to empty, and says so.
+
+    It came back as weights around 1e-4, ``optimal``, a NaN Sharpe and nothing
+    else. Minimum variance does honour the open budget — the pre-flight relies
+    on exactly that solve for the volatility floor of an open-budget mandate —
+    so the answer stands, with the invested fraction and a note beside it.
+    """
+    from optimization_engine.optimizers.base import PortfolioConstraints
+    from optimization_engine.optimizers.mean_variance import MinVarianceOptimizer
+
+    cov = covariance_matrix(returns, method="sample")
+    result = MinVarianceOptimizer(
+        cov_matrix=cov, constraints=PortfolioConstraints(fully_invested=False)
+    ).optimize()
+
+    assert 0.0 <= result.extras["invested_fraction"] < 0.01  # solver tolerance
+    assert "open budget" in result.extras["budget_note"]
 
 
 @pytest.mark.parametrize("linkage", ["single", "average", "complete", "ward"])

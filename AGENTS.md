@@ -17,7 +17,7 @@ reference** — generated from the docstrings, so every exported name carries
 its signature, parameters, units and errors — is published to GitHub Pages
 from `main`, and builds locally with `pip install "finport-optengine[docs]"`
 then `python scripts/build_api_docs.py`. **[`docs/ERRORS.md`](docs/ERRORS.md)**
-is the refusal contract: which of the twenty-five exception types to catch,
+is the refusal contract: which of the twenty-seven exception types to catch,
 which are recoverable, the CLI's exit codes, and — the part that catches
 people — the failures that are *reported* rather than raised.
 
