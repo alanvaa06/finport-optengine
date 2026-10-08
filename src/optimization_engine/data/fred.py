@@ -35,7 +35,7 @@ _FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 # is generous; the longest known IDs are around 20 chars.
 _SERIES_ID_PATTERN = re.compile(r"^[A-Z0-9_]{1,30}$")
 
-_USER_AGENT = "optimization-engine/0.2 (+https://github.com/alanvaa06/Optimization_Engine)"
+_USER_AGENT = "optimization-engine/0.2 (+https://github.com/alanvaa06/finport-optengine)"
 
 #: Ceiling on one series' CSV body. Generous by three orders of magnitude for
 #: real data, and the difference between a bad endpoint costing a request and

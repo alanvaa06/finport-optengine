@@ -266,6 +266,126 @@ def test_michaud_counts_draws_that_solved_too_few_ranks(returns, config, monkeyp
     assert "Error" not in result.first_error
 
 
+def _mock_rank_failures(monkeypatch, failing):
+    """Make rank ``r`` of draw ``i`` fail whenever ``(i, r)`` is in ``failing``.
+
+    The frontier still comes back — the failure is a status, not an
+    exception — which is the case the rank grid has to survive.
+    """
+    import copy
+
+    import optimization_engine.resampling as res
+
+    calls = {"i": 0}
+
+    def holed(*args, **kwargs):
+        result = copy.deepcopy(_REAL_FRONTIER(*args, **kwargs))
+        i = calls["i"]
+        calls["i"] += 1
+        for draw, rank in failing:
+            if draw == i:
+                result.summary.loc[result.summary.index[rank], "status"] = "failed"
+                result.weights.iloc[:, rank] = np.nan
+        return result
+
+    monkeypatch.setattr(res, "efficient_frontier", holed)
+
+
+def test_a_rank_lost_in_one_draw_does_not_shift_the_others(
+    returns, config, monkeypatch
+):
+    """Ranks are averaged by position, each over the draws where it solved.
+
+    The solved ranks used to be renumbered from zero per draw and the grid cut
+    to the shortest draw, so one failed middle rank in one draw moved every
+    rank above it down a slot in that draw, and the top rank vanished from
+    the result altogether — while the summary said all eight draws averaged
+    cleanly.
+    """
+    clean = resampled_efficient_frontier(returns, config, n_draws=8, n_points=6, seed=1)
+    _mock_rank_failures(monkeypatch, {(0, 2)})
+    holed = resampled_efficient_frontier(returns, config, n_draws=8, n_points=6, seed=1)
+
+    assert list(holed.weights.columns) == list(clean.weights.columns)
+    assert len(holed.weights.columns) == 6
+    assert holed.rank_counts["rank_2"] == 7
+    assert (holed.rank_counts.drop("rank_2") == 8).all()
+    others = [c for c in clean.weights.columns if c != "rank_2"]
+    pd.testing.assert_frame_equal(holed.weights[others], clean.weights[others])
+    np.testing.assert_allclose(holed.weights.sum().values, 1.0, atol=1e-6)
+    assert holed.n_failed == 0
+    assert "rank_2" in holed.summary()
+
+
+def test_a_rank_that_solved_in_a_minority_of_draws_is_dropped_and_named(
+    returns, config, monkeypatch
+):
+    """The draw-level rule, applied per rank: a minority average is refused."""
+    _mock_rank_failures(monkeypatch, {(i, 5) for i in range(5)})
+    result = resampled_efficient_frontier(returns, config, n_draws=8, n_points=6, seed=1)
+
+    assert "rank_5" not in result.weights.columns
+    assert result.rank_counts["rank_5"] == 3
+    assert "rank_5" in result.summary()
+
+
+def test_the_point_frontier_is_centred_on_the_estimator_the_draws_use(returns):
+    """The band re-estimates mu from each draw, so the centre must too.
+
+    The point curve was traced on the config's own expected returns while
+    every draw used historical ones, so a config carrying capital-market
+    assumptions drew a flat 3% line through a band whose median ran from 0%
+    to 6%.
+    """
+    from optimization_engine.data.covariance import (
+        covariance_from_config,
+        expected_returns_from_history,
+    )
+
+    assumptions = {a: 0.03 for a in returns.columns}
+    with_cmas = EngineConfig(
+        expected_returns=assumptions,
+        bounds={a: [0.0, 0.4] for a in returns.columns},
+        optimizer=OptimizerSpec(name="mean_variance"),
+    )
+    band = bootstrap_frontier(returns, with_cmas, n_draws=4, n_points=6, seed=0)
+
+    historical = expected_returns_from_history(returns, method="mean")
+    expected = efficient_frontier(
+        EngineConfig(
+            expected_returns=historical.to_dict(),
+            bounds=with_cmas.bounds,
+            optimizer=with_cmas.optimizer,
+        ),
+        covariance_from_config(returns, with_cmas),
+        expected_returns=historical,
+        returns=returns,
+        n_points=6,
+    )
+    np.testing.assert_allclose(
+        band.point_estimate.summary["expected_return"].values,
+        expected.summary["expected_return"].values,
+    )
+
+    held = bootstrap_frontier(
+        returns, with_cmas, n_draws=4, n_points=6, seed=0,
+        reestimate_expected_returns=False,
+    )
+    np.testing.assert_allclose(held.point_estimate.summary["expected_return"], 0.03)
+    np.testing.assert_allclose(held.quantiles.values, 0.03)
+
+
+def test_bootstrap_estimates_mu_when_the_config_carries_none(returns):
+    """Every draw estimates its own mu; the centre used to refuse instead."""
+    bare = EngineConfig(
+        bounds={a: [0.0, 0.4] for a in returns.columns},
+        optimizer=OptimizerSpec(name="mean_variance"),
+    )
+    band = bootstrap_frontier(returns, bare, n_draws=4, n_points=5, seed=0)
+    assert band.n_failed == 0
+    assert band.point_estimate.n_failed == 0
+
+
 # ---------------------------------------------------------------------------
 # Plots
 # ---------------------------------------------------------------------------

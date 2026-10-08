@@ -141,6 +141,65 @@ def test_capm_market_return_is_arithmetic(returns: pd.DataFrame):
     )
 
 
+def test_ema_weights_the_window_it_was_given_not_its_first_observation():
+    """``ema`` is a weighted *mean* of the window, with weights that sum to one.
+
+    ``ewm(adjust=False)`` seeds the recursion with the first observation and
+    leaves it whatever weight the decay has not yet handed to later rows:
+    ``(1 − α)^(T−1)``, which on a 24-month window at the default span of 180
+    is 0.774. One bad first month then sets the whole estimate — a −20% start
+    to an otherwise steady +0.5% a month took μ to −86.7%. The normalized
+    weights (``adjust=True``) give the same row ``(1 − α)^(T−1) / Σ(1 − α)^k``.
+    """
+    index = pd.date_range("2022-01-31", periods=24, freq="ME")
+    monthly = pd.DataFrame({"A": [-0.20] + [0.005] * 23}, index=index)
+
+    mu = expected_returns_from_history(
+        monthly, method="ema", periods_per_year=12, span=180
+    )
+
+    alpha = 2.0 / (180 + 1.0)
+    weights = (1.0 - alpha) ** np.arange(len(monthly))[::-1]
+    by_hand = float((weights * monthly["A"].values).sum() / weights.sum()) * 12
+    assert float(mu["A"]) == pytest.approx(by_hand, rel=1e-12)
+    # The first month weighs about 1/24 of the window, not three quarters.
+    assert weights[0] / weights.sum() < 0.06
+    assert float(mu["A"]) > -0.10
+
+
+def test_ema_is_annualized_like_the_mean_it_generalizes(returns: pd.DataFrame):
+    """With no decay to speak of, ``ema`` is the arithmetic ``mean``.
+
+    Both are single-period expectations, so both annualize as ``r̄ · ppy``.
+    ``ema`` compounded instead — ``(1 + r̄)^ppy − 1`` — which on its own is a
+    different convention from ``mean`` and, combined with the seeding above,
+    put a span of ten million about 90 percentage points away from it.
+    """
+    mean = expected_returns_from_history(returns, method="mean")
+    flat = expected_returns_from_history(returns, method="ema", span=10**9)
+    pd.testing.assert_series_equal(flat, mean, check_names=False, rtol=0, atol=1e-6)
+
+
+def test_geometric_mean_compounds_each_asset_over_its_own_history():
+    """An asset that listed late is annualized over the periods it has.
+
+    ``prod`` skips the missing returns while ``len`` counted them, so on a
+    panel where Gold lists halfway through, its two years of compound growth
+    were spread over all four: 4.6% instead of 9.45%.
+    """
+    prices = sample_dataset(n_periods=252 * 4, seed=3)[["US_Equity", "Gold"]].copy()
+    prices.iloc[: 252 * 2, 1] = np.nan
+    ragged = prices_to_returns(prices)
+
+    on_the_panel = expected_returns_from_history(ragged, method="geometric_mean")
+    on_its_own = expected_returns_from_history(
+        ragged[["Gold"]].dropna(), method="geometric_mean"
+    )
+    assert float(on_the_panel["Gold"]) == pytest.approx(float(on_its_own["Gold"]))
+    full = expected_returns_from_history(ragged[["US_Equity"]], method="geometric_mean")
+    assert float(on_the_panel["US_Equity"]) == pytest.approx(float(full["US_Equity"]))
+
+
 def test_unknown_method_names_every_available_one(returns: pd.DataFrame):
     with pytest.raises(ValueError, match="Unknown expected-return method"):
         expected_returns_from_history(returns, method="arithmetic")
