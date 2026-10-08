@@ -131,7 +131,9 @@ def annualize_returns(
 
     Returns:
         The compound annual growth rate as a fraction. One value per column
-        for a frame, a scalar for a series.
+        for a frame, a scalar for a series. NaN where there is no observation
+        at all — the empty product is 1, which used to read as a 0% CAGR for
+        a column with no data.
     """
     if prices:
         r = r.pct_change(fill_method=None).dropna()
@@ -139,7 +141,11 @@ def annualize_returns(
     # Count the observations that exist, not the rows: ``prod`` skips a NaN,
     # so counting its row would price a missing period as a zero return.
     n = r.count()
-    return compounded ** (periods_per_year / n) - 1
+    with np.errstate(divide="ignore"):
+        growth = compounded ** (periods_per_year / n) - 1
+    if isinstance(growth, pd.Series):
+        return growth.where(n > 0)
+    return growth if n > 0 else float("nan")
 
 
 def _rf_per_period(riskfree_rate: float, periods_per_year: int) -> float:

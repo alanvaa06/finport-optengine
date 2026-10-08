@@ -555,3 +555,27 @@ def test_n_trials_is_raised_to_the_trials_supplied():
     assert undercounted.n_trials == 50
     assert undercounted.deflated == pytest.approx(honest.deflated)
     assert undercounted.deflated < undercounted.probabilistic
+
+
+# ---------------------------------------------------------------------------
+# 8. No observations is no return, not a 0% return
+# ---------------------------------------------------------------------------
+
+
+def test_annualize_returns_is_nan_without_observations():
+    from optimization_engine.analytics.performance import annualize_returns
+
+    assert np.isnan(annualize_returns(pd.Series(np.nan, index=_days(300))))
+    assert np.isnan(annualize_returns(pd.Series([], dtype=float)))
+
+    rng = np.random.default_rng(8)
+    frame = pd.DataFrame(
+        {"live": rng.normal(0.0004, 0.01, 300), "empty": np.nan}, index=_days(300)
+    )
+    cagr = annualize_returns(frame)
+    assert np.isnan(cagr["empty"])
+    assert cagr["live"] == pytest.approx(annualize_returns(frame["live"]))
+
+    # The aggregation summary_stats builds its "Annualized Return" from.
+    aggregated = frame.aggregate(annualize_returns, periods_per_year=PPY)
+    assert np.isnan(aggregated["empty"])
