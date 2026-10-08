@@ -177,12 +177,7 @@ class PanelCache:
                 if self.ttl_seconds and age > self.ttl_seconds:
                     return None
 
-                index = pd.DatetimeIndex(
-                    np.asarray(manifest["index"], dtype="int64").astype(
-                        manifest.get("index_dtype", "datetime64[ns]")
-                    ),
-                    name="date",
-                )
+                index = _decode_index(manifest)
                 columns = list(manifest["identifiers"])
                 frames = {
                     name: pd.DataFrame(
@@ -245,13 +240,28 @@ class PanelCache:
             this call published it or a concurrent writer of the same key won
             the race — the fingerprint covers everything that affects the
             data, so their entry is the one this call would have written.
-            ``False`` otherwise; failures are logged and swallowed, because a
-            read-only directory or a full disk should slow the next run down,
-            not fail this one.
+            ``False`` otherwise, including when every publish was refused and
+            the entry left in place is one that was already there when this
+            call began — on Windows, an older entry a reader holds open. That
+            entry is not this call's result. Also ``False``, without writing,
+            for a panel whose index the format cannot carry back. Failures
+            are logged and swallowed, because a read-only directory or a full
+            disk should slow the next run down, not fail this one.
         """
         target = self.path_for(key)
         handle, staging = -1, ""
+        # What was at the target before this call, so a refused publish can
+        # tell a racing writer's fresh entry from an old one held open.
+        before = _identity(target)
         try:
+            if not _decode_index(_encode_index(panel.index)).equals(panel.index):
+                _LOG.warning(
+                    "Not caching panel %s: its index (%s) does not survive the "
+                    "round trip through the cache format",
+                    key,
+                    panel.index.dtype,
+                )
+                return False
             self.directory.mkdir(parents=True, exist_ok=True)
             handle, staging = tempfile.mkstemp(
                 dir=self.directory, prefix=f".{key}.", suffix=".tmp"
@@ -276,18 +286,20 @@ class PanelCache:
                     staging = ""  # renamed away; nothing left to clean up
                     return True
 
-            # Every attempt was refused, so this call did not publish. If an
-            # entry is nonetheless there, a racing writer of the same key
+            # Every attempt was refused, so this call did not publish. If a
+            # *different* entry is there now, a racing writer of the same key
             # published one while we backed off, and by the paragraph above
-            # that is this call's own result — a hit, not a lost write. Note
-            # the check is here rather than above ``os.replace``: a write that
-            # never got that far (a serialization error, a full disk) must
-            # still report False even when a stale entry happens to exist.
+            # that is this call's own result — a hit, not a lost write. The
+            # same entry as before is not: it is an older one that somebody
+            # is holding open, which is what refuses the replace on Windows.
+            # Note the check is here rather than above ``os.replace``: a
+            # write that never got that far (a serialization error, a full
+            # disk) must still report False even when an entry exists.
             #
-            # Nothing in production reads this bool — service.py's only call
-            # site discards it — so this contract is for tests and for direct
-            # callers of the cache, not for the ingest path.
-            if target.is_file():
+            # service.py reads this bool and says "Not cached" when it is
+            # False, so the caller hears about a write that did not land.
+            after = _identity(target)
+            if after is not None and after != before:
                 _LOG.debug(
                     "Could not publish cache entry %s (%d attempts refused), "
                     "but a concurrent writer left one in place",
@@ -298,9 +310,12 @@ class PanelCache:
 
             _LOG.warning(
                 "Could not cache panel %s: publishing was refused %d times "
-                "and no entry is in place",
+                "and %s",
                 key,
                 _REPLACE_ATTEMPTS,
+                "an older entry, held open elsewhere, was left in place"
+                if after is not None
+                else "no entry is in place",
             )
             return False
         except Exception as exc:
@@ -325,18 +340,12 @@ class PanelCache:
         field frame shares it — :meth:`PricePanel.from_frames` guarantees that,
         and :meth:`PricePanel.validate` enforces it.
         """
-        index = panel.index
         manifest = {
             "format_version": _FORMAT_VERSION,
             "written_at": time.time(),
             "fields": list(panel.frames),
             "identifiers": list(panel.identifiers),
-            # The unit travels with the values: pandas builds an index at
-            # microsecond or nanosecond resolution depending on how it was
-            # constructed, and a panel that comes back at a different one is
-            # not the panel that went in.
-            "index": index.view("int64").tolist(),
-            "index_dtype": str(index.dtype),
+            **_encode_index(panel.index),
             "meta": {
                 identifier: {
                     "provider_symbol": record.provider_symbol,
@@ -375,6 +384,45 @@ class PanelCache:
                     child.unlink()
                     removed += 1
         return removed
+
+
+def _encode_index(index: pd.DatetimeIndex) -> dict[str, object]:
+    """The manifest fields that carry a panel's dates.
+
+    The unit travels with the values: pandas builds an index at microsecond
+    or nanosecond resolution depending on how it was constructed, and a panel
+    that comes back at a different one is not the panel that went in. So
+    does the time zone, separately: ``datetime64[us, America/New_York]`` is
+    not a dtype NumPy can cast to, and storing it as one made every load of
+    a tz-aware panel a miss while ``store`` reported success.
+    """
+    naive = index.tz_convert("UTC").tz_localize(None) if index.tz is not None else index
+    return {
+        "index": naive.view("int64").tolist(),
+        "index_dtype": str(naive.dtype),
+        "index_tz": str(index.tz) if index.tz is not None else None,
+    }
+
+
+def _decode_index(manifest: dict) -> pd.DatetimeIndex:
+    """Rebuild the index :func:`_encode_index` wrote."""
+    index = pd.DatetimeIndex(
+        np.asarray(manifest["index"], dtype="int64").astype(
+            manifest.get("index_dtype", "datetime64[ns]")
+        ),
+        name="date",
+    )
+    tz = manifest.get("index_tz")
+    return index.tz_localize("UTC").tz_convert(tz) if tz else index
+
+
+def _identity(path: Path) -> tuple[int, int, int] | None:
+    """Which file is at ``path``: inode, size and mtime, or ``None``."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
 
 __all__ = ["CacheEntry", "PanelCache"]

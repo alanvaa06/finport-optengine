@@ -301,8 +301,12 @@ def ingest(
         not_cached = _uncacheable_reason(outcomes, fx_degraded)
         if not_cached:
             warnings.append(f"Not cached: {not_cached}")
-        else:
-            cache.store(cache_key, panel, notes=panel_notes)
+        elif not cache.store(cache_key, panel, notes=panel_notes):
+            warnings.append(
+                "Not cached: the entry could not be written (see the log). An "
+                "older entry for this request, if one exists, is still served "
+                "until it expires."
+            )
 
     return IngestResult(
         panel=panel,

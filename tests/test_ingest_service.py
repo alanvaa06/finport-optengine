@@ -832,13 +832,21 @@ def test_a_publish_lost_to_another_writer_of_the_same_key_is_still_a_success(
 
     cache = PanelCache(tmp_path)
     panel = _panel_for("AAA", volume=True)
-    assert cache.store("samekey", panel) is True  # the writer that wins the race
-    already_published = cache.path_for("samekey").read_bytes()
-
+    rival = PanelCache(tmp_path)
+    real_replace = cache_module.os.replace
     attempts = []
+    published = {}
 
     def always_refuse(src, dst):
         attempts.append(1)
+        if len(attempts) == 1:
+            # The writer that wins the race publishes while this call backs
+            # off. An entry already there *before* the call would not count:
+            # see the held-open test below.
+            monkeypatch.setattr(cache_module.os, "replace", real_replace)
+            assert rival.store("samekey", panel) is True
+            published["bytes"] = cache.path_for("samekey").read_bytes()
+            monkeypatch.setattr(cache_module.os, "replace", always_refuse)
         raise PermissionError(5, "Access is denied")
 
     monkeypatch.setattr(cache_module.os, "replace", always_refuse)
@@ -846,9 +854,9 @@ def test_a_publish_lost_to_another_writer_of_the_same_key_is_still_a_success(
     monkeypatch.undo()
 
     assert len(attempts) == 5, "five attempts before conceding the race"
-    # The entry that was already there is untouched — no half-published mix of
+    # The entry the rival published is untouched — no half-published mix of
     # the two — and the staging file this call built is gone.
-    assert cache.path_for("samekey").read_bytes() == already_published
+    assert cache.path_for("samekey").read_bytes() == published["bytes"]
     assert list(tmp_path.iterdir()) == [cache.path_for("samekey")]
     assert cache.load("samekey") is not None
 
@@ -996,3 +1004,49 @@ def test_an_edited_file_is_read_again_rather_than_served_from_cache(tmp_path):
     assert float(edited.prices["AAA"].iloc[0]) == pytest.approx(300.0)
     assert float(first.prices["AAA"].iloc[0]) == pytest.approx(100.0)
 
+
+def test_a_timezone_aware_panel_round_trips_through_the_cache(tmp_path):
+    """``store`` said True and every ``load`` missed, logged at debug only."""
+    index = pd.bdate_range("2024-01-01", periods=8).tz_localize("America/New_York")
+    panel = PricePanel.from_frames(
+        {F.CLOSE: pd.DataFrame({"AAA": np.linspace(10.0, 17.0, 8)}, index=index)}
+    )
+    cache = PanelCache(tmp_path)
+
+    assert cache.store("tz", panel) is True
+    loaded = cache.load("tz")
+    assert loaded is not None
+    pd.testing.assert_frame_equal(loaded[0].prices(), panel.prices())
+
+
+def test_a_publish_refused_while_an_older_entry_is_held_open_reports_failure(
+    tmp_path, monkeypatch
+):
+    """An entry that predates the call is not this call's result.
+
+    Windows refuses ``os.replace`` while a reader holds the target open. The
+    entry left in place is then the *old* one, and reporting the write as a
+    success told the caller its panel was cached when it was not.
+    """
+    from optimization_engine.ingest import cache as cache_module
+
+    cache = PanelCache(tmp_path)
+    old = _panel_for("AAA", volume=False)
+    assert cache.store("samekey", old) is True
+    held = cache.path_for("samekey").read_bytes()
+
+    def refuse(src, dst):
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr(cache_module.os, "replace", refuse)
+    assert cache.store("samekey", _panel_for("BBB", volume=False)) is False
+    monkeypatch.undo()
+
+    assert cache.path_for("samekey").read_bytes() == held
+    assert list(tmp_path.iterdir()) == [cache.path_for("samekey")]
+
+
+def test_a_run_whose_panel_could_not_be_cached_says_so(tmp_path, monkeypatch):
+    monkeypatch.setattr(PanelCache, "store", lambda self, *a, **k: False)
+    result = ingest(_request(("AAA",), cache_dir=str(tmp_path)), provider=StubProvider())
+    assert any(note.startswith("Not cached:") for note in result.warnings)
