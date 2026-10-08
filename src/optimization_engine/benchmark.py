@@ -329,19 +329,36 @@ def portfolio_returns_from_weights(
             the result is no longer the stated allocation.
 
     Returns:
-        One return per row of ``returns``.
+        One return per row of ``returns``, NaN on every row where a member
+        with non-zero weight has no return. A member that has not listed yet,
+        or has delisted, earned nothing knowable — not 0%. Filling it with zero
+        made a 50/50 benchmark exactly half of its live member before the other
+        listed: half the volatility, and a spurious tracking error and alpha
+        for any book that held what could be held. The relative analytics
+        already handle a benchmark with gaps, as they must for an external
+        series that does not cover the panel. Under ``"buy_and_hold"`` the
+        book is bought on the first row where every member trades, rather
+        than parking an unlisted member's share at zero return until it
+        appears.
     """
     aligned = weights.reindex(returns.columns).fillna(0.0).astype(float)
+    held = [c for c in returns.columns if aligned[c] != 0.0]
+    undefined = returns[held].isna().any(axis=1)
     if rebalance == "periodic":
-        return (returns.fillna(0.0) * aligned).sum(axis=1)
+        return (returns.fillna(0.0) * aligned).sum(axis=1).mask(undefined)
 
-    growth = (1.0 + returns.fillna(0.0)).cumprod()
+    out = pd.Series(float("nan"), index=returns.index, dtype=float)
+    defined = (~undefined).to_numpy()
+    if not defined.any():
+        return out
+    first = int(defined.argmax())
+    growth = (1.0 + returns.iloc[first:].fillna(0.0)).cumprod()
     nav = growth.mul(aligned, axis=1).sum(axis=1)
     previous = nav.shift(1)
-    if len(previous):
-        previous.iloc[0] = float(aligned.sum())
-    out = nav / previous - 1.0
-    return out.replace([float("inf"), float("-inf")], float("nan"))
+    previous.iloc[0] = float(aligned.sum())
+    out.iloc[first:] = (nav / previous - 1.0).to_numpy()
+    out = out.replace([float("inf"), float("-inf")], float("nan"))
+    return out.mask(undefined)
 
 
 def resolve_benchmark(

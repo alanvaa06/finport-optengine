@@ -8,6 +8,7 @@ whether to trust it.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -48,6 +49,7 @@ from optimization_engine.data.covariance import (
     nearest_psd,
 )
 from optimization_engine.frontier import FrontierResult, efficient_frontier
+from optimization_engine.optimizers import ConfigurationError
 from optimization_engine.optimizers._cvxpy_helpers import SolverFailure
 from optimization_engine.optimizers.base import OptimizationResult
 from optimization_engine.optimizers.diagnostics import (
@@ -72,6 +74,12 @@ from optimization_engine.stress import (
     stress_test,
 )
 from optimization_engine.universe import Eligibility
+
+#: Pre-solve findings that ``strict_mandate`` turns from a warning into a
+#: refusal: limits written against assets the panel does not hold.
+_STRAY_MANDATE_CODES = frozenset(
+    {"bounds_outside_universe", "layer_assets_outside_universe"}
+)
 
 
 def apply_fx_conversion(
@@ -262,10 +270,15 @@ class EngineRun:
                 equal weights would invent a benchmark nobody chose.
         """
         assets = list(self.result.weights.index)
-        weights = self.config.benchmark_weight_map(assets)
-        if weights is None and self.benchmark is not None:
+        # The benchmark resolved at solve time first, as ``performance()`` reads
+        # it — this used to ask the config first, and so disagreed with the
+        # report whenever the config carried two benchmarks.
+        weights: dict | None
+        if self.benchmark is not None:
             resolved = self.benchmark.weights
             weights = None if resolved is None else resolved.to_dict()
+        else:
+            weights = self.config.benchmark_weight_map(assets)
         if not weights:
             raise ValueError(
                 "This run has no position-based benchmark, so there are no "
@@ -984,8 +997,70 @@ def resolve_expected_returns(
 
     Returns:
         Annualized expected returns, always reindexed onto
-        ``returns.columns`` — so an asset the config forgot contributes zero
-        rather than a NaN that propagates silently through the objective.
+        ``returns.columns``. An asset the vector does not cover is filled with
+        zero rather than a NaN that would propagate through the objective — and
+        a ``UserWarning`` names it, because a zero expected return is an active
+        view, not a neutral one. Names the vector carries that the panel does
+        not hold are dropped. :func:`run_engine` records both in
+        ``run.warnings`` and ``result.extras``.
+
+    Raises:
+        ConfigurationError: If the vector both misses panel assets *and* names
+            assets the panel does not hold — the signature of a misspelt key,
+            which would otherwise zero the asset it was meant for. See
+            :func:`expected_return_gaps`.
+    """
+    resolved, _, _ = _resolve_expected_returns(config, returns, cov, expected_returns)
+    return resolved
+
+
+def expected_return_gaps(
+    expected_returns: pd.Series | dict[str, float], assets: Sequence[str]
+) -> tuple[list[str], list[str]]:
+    """Where an expected-return vector and a universe disagree.
+
+    Args:
+        expected_returns: The vector, as a Series or a mapping.
+        assets: The universe it is meant to cover.
+
+    Returns:
+        ``(missing, unknown)``: the assets with no expected return — absent, or
+        NaN — in universe order, and the vector's names the universe does not
+        hold, in the vector's order.
+    """
+    vector = pd.Series(expected_returns, dtype=float)
+    universe = {str(a) for a in assets}
+    covered = {str(k) for k, v in vector.items() if pd.notna(v)}
+    missing = [str(a) for a in assets if str(a) not in covered]
+    unknown = [str(k) for k in vector.index if str(k) not in universe]
+    return missing, unknown
+
+
+def _resolve_expected_returns(
+    config: EngineConfig,
+    returns: pd.DataFrame,
+    cov: pd.DataFrame,
+    expected_returns: pd.Series | None,
+) -> tuple[pd.Series, list[str], list[str]]:
+    """:func:`resolve_expected_returns`, also returning what it filled and dropped.
+
+    The rule, applied to an explicit or configured vector (an estimate from the
+    history covers the panel by construction):
+
+    * Missing *and* unknown names together are refused. That is what a
+      misspelling looks like — ``EM_Equityy`` given, ``EM_Equity`` therefore
+      absent — and filling the real asset with zero would build the book on a
+      bearish view nobody stated.
+    * Missing names alone are filled with zero and warned about.
+    * Unknown names alone are dropped. A walk-forward hands a screened window
+      a subset of the columns the config was written for; that is not a
+      mistake, and refusing it would fail every such window.
+
+    Returns:
+        ``(vector, missing, unknown)``.
+
+    Raises:
+        ConfigurationError: As :func:`resolve_expected_returns` documents.
     """
     if expected_returns is None and config.expected_returns:
         expected_returns = pd.Series(config.expected_returns)
@@ -1007,7 +1082,24 @@ def resolve_expected_returns(
             market_weights=market_w,
             cov_matrix=cov,
         )
-    return expected_returns.reindex(returns.columns).fillna(0.0)
+    missing, unknown = expected_return_gaps(expected_returns, list(returns.columns))
+    if missing and unknown:
+        raise ConfigurationError(
+            f"The expected returns name {', '.join(unknown)}, which the panel does "
+            f"not hold, and give none for {', '.join(missing)}, which it does. That "
+            "is what a misspelt key looks like, and filling the real asset with "
+            "0.0 would optimize on a bearish view nobody stated. Fix the names."
+        )
+    if missing:
+        warnings.warn(
+            f"resolve_expected_returns: no expected return for {len(missing)} asset(s) "
+            f"({', '.join(missing[:5])}{' …' if len(missing) > 5 else ''}); "
+            "assuming 0.0. A zero expected return is an active view, not a "
+            "neutral one.",
+            UserWarning,
+            stacklevel=3,
+        )
+    return expected_returns.reindex(returns.columns).fillna(0.0), missing, unknown
 
 
 def configured_shocks(config: EngineConfig) -> tuple[Shock, ...]:
@@ -1080,6 +1172,12 @@ def run_engine(
             constraints cannot be satisfied.
         StressError: When ``run_stress`` is set and a configured shock names an
             asset outside the panel, which is the same defect as a view on one.
+        ConfigurationError: When the expected returns both miss panel assets
+            and name assets the panel does not hold — a misspelt key (see
+            :func:`resolve_expected_returns`). Also when
+            ``config.strict_mandate`` is set and a bound or a layer assignment
+            names an asset the panel does not hold; that one is found by the
+            pre-solve analysis, so not checked under ``check_feasibility=False``.
         MandateViolationError: When ``config.strict_mandate`` is set and the
             solved book breaches the mandate past tolerance. Unlike the other
             two this is raised *after* a successful solve — the answer arrived
@@ -1126,11 +1224,15 @@ def run_engine(
         ewma_lambda=config.ewma_lambda,
     )
 
-    expected_returns = resolve_expected_returns(
+    expected_returns, missing_mu, ignored_mu = _resolve_expected_returns(
         config, returns, cov, expected_returns
     )
 
-    benchmark = resolve_benchmark(config.benchmark, returns, external_returns)
+    # The same spec constraints_from_config reads through benchmark_weight_map,
+    # so the stream reported against is the vector the solve was held to.
+    benchmark = resolve_benchmark(
+        config.effective_benchmark(), returns, external_returns
+    )
     constraints = constraints_from_config(config, list(returns.columns))
     # Before the feasibility LP, not after: a budget with no benchmark to
     # measure it against is a configuration error, and the LP would otherwise
@@ -1148,6 +1250,19 @@ def run_engine(
             expected_returns=effective_expected_returns(config, cov, expected_returns),
             cov_matrix=cov,
         )
+        # A bound or layer assignment on an asset the panel does not hold is a
+        # warning by default — it constrains nothing, so the mandate is still
+        # solvable. Under strict_mandate it is refused: the author believes the
+        # limit binds, and the usual cause is a misspelt name. Tied to this
+        # analysis rather than done unconditionally because a walk-forward
+        # window skips it, and a screened universe narrowing for a window is not
+        # a misspelling.
+        stray = [i.message for i in feasibility.issues if i.code in _STRAY_MANDATE_CODES]
+        if stray and getattr(config, "strict_mandate", False):
+            raise ConfigurationError(
+                "strict_mandate refuses a mandate that names assets the panel does "
+                f"not hold: {'; '.join(stray)}. Fix the names, or drop the limits."
+            )
         if raise_on_infeasible and not feasibility.is_feasible:
             raise InfeasibleConstraintsError(feasibility)
 
@@ -1204,6 +1319,21 @@ def run_engine(
             stress = stress_test(result.weights, shocks, cov_matrix=cov)
 
     run_warnings: list[str] = list(cov_diag.warnings)
+    # The vector reaching the optimizer is already complete, so the
+    # optimizer's own missing-return warning cannot fire on this path. The
+    # gaps are recorded here instead, where the caller reads them.
+    if missing_mu:
+        result.extras["missing_expected_returns"] = list(missing_mu)
+        run_warnings.append(
+            f"No expected return for {', '.join(missing_mu)}; optimized with 0.0, "
+            "which is an active view, not a neutral one."
+        )
+    if ignored_mu:
+        result.extras["ignored_expected_returns"] = list(ignored_mu)
+        run_warnings.append(
+            f"Expected returns given for {', '.join(ignored_mu)}, which the panel "
+            "does not hold; they were ignored."
+        )
     if feasibility is not None:
         run_warnings.extend(i.message for i in feasibility.warnings)
     run_warnings.extend(result.violations)

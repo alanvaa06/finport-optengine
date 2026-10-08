@@ -49,6 +49,19 @@ class ConstraintViolation:
         )
 
 
+def _turnover(weights: pd.Series, previous: dict[str, float]) -> float:
+    """``Σ|w − w_prev|`` over the union of both books.
+
+    Reindexing the previous book onto ``weights`` dropped every holding the
+    universe no longer contains, so selling it cost nothing. It is sold —
+    the book cannot keep a name it cannot hold — and counts in full.
+    """
+    prev = pd.Series(previous, dtype=float)
+    names = weights.index.union(prev.index)
+    held = prev.reindex(names).fillna(0.0)
+    return float((weights.reindex(names).fillna(0.0) - held).abs().sum())
+
+
 def check_constraints(
     weights: pd.Series,
     constraints: PortfolioConstraints,
@@ -106,8 +119,7 @@ def check_constraints(
         out.append(ConstraintViolation("group", label, limit, actual))
 
     if constraints.previous_weights and constraints.turnover_limit is not None:
-        prev = pd.Series(constraints.previous_weights).reindex(weights.index).fillna(0.0)
-        turnover = float((weights - prev).abs().sum())
+        turnover = _turnover(weights, constraints.previous_weights)
         if turnover > float(constraints.turnover_limit) + tolerance:
             out.append(
                 ConstraintViolation(
@@ -407,8 +419,7 @@ def portfolio_diagnostics(
     if constraints is not None:
         violations = tuple(check_constraints(w, constraints, cov_matrix=cov_matrix))
         if constraints.previous_weights:
-            prev = pd.Series(constraints.previous_weights).reindex(w.index).fillna(0.0)
-            turnover = float((w - prev).abs().sum())
+            turnover = _turnover(w, constraints.previous_weights)
 
     return PortfolioDiagnostics(
         n_positions=int((w.abs() > active_tolerance).sum()),

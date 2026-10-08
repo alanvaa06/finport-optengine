@@ -8,14 +8,17 @@ mutated programmatically, or built from a UI.
 
 from __future__ import annotations
 
+import copy
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+import numpy as np
 import yaml
 
-from optimization_engine.benchmark import BenchmarkSpec
+from optimization_engine.benchmark import BenchmarkError, BenchmarkSpec
 from optimization_engine.constraints import ConstraintLayer, coerce_layers
 from optimization_engine.stress import Shock, shocks_from_dicts, shocks_to_dicts
 
@@ -97,9 +100,11 @@ class OptimizerSpec:
 
         Returns:
             Every field that is not ``None``, so a serialized config carries only
-            what was actually chosen rather than every knob's default.
+            what was actually chosen rather than every knob's default. Copied,
+            not shared: a caller editing the dump — ``extra``, ``risk_budget``,
+            the views — must not reach back into the spec.
         """
-        return {k: v for k, v in self.__dict__.items() if v is not None}
+        return {k: copy.deepcopy(v) for k, v in self.__dict__.items() if v is not None}
 
 
 #: Every key :meth:`EngineConfig.from_dict` reads. A key outside this set is
@@ -125,6 +130,43 @@ _OPTIMIZER_KEYS = frozenset(OptimizerSpec.__dataclass_fields__)
 #: four separate places, so a name added on one side quietly failed to reach
 #: the other.
 _EXPECTED_RETURN_METHOD_ALIASES: dict[str, str] = {"historical_mean": "mean"}
+
+
+#: The switches on :class:`EngineConfig`, read by :func:`_as_bool` rather than
+#: by ``bool()``.
+_BOOLEAN_KEYS = ("long_only", "fully_invested", "strict_mandate", "denoise")
+
+
+def _as_bool(value: Any, key: str) -> bool:
+    """A config switch, read strictly: a real boolean, or the words true and false.
+
+    ``bool()`` is the wrong reader for a value that came from a file. It turns
+    the JSON string ``"false"`` into ``True`` — so a file that quoted its
+    booleans switched every one of them on, ``long_only`` included — and an
+    empty YAML value into ``False``. YAML and JSON both have real booleans; the
+    two words are accepted, in any case, for the file that quoted them, and so
+    are ``0`` and ``1``. Anything else is a question with no safe answer.
+
+    Args:
+        value: The raw value.
+        key: The field it was read for, named in the error.
+
+    Returns:
+        The boolean.
+
+    Raises:
+        ConfigurationError: If ``value`` is anything else — ``"no"``, ``2``,
+            ``None``.
+    """
+    from optimization_engine.optimizers import ConfigurationError
+
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+        return value.strip().lower() == "true"
+    raise ConfigurationError(f"{key} must be true or false; got {value!r}.")
 
 
 def expected_return_method_for_estimator(method: str) -> str:
@@ -170,12 +212,17 @@ class EngineConfig:
             maps assets to buckets and caps each bucket, either as a share of
             the whole book or as a share of its parent layer's bucket. See
             :mod:`optimization_engine.constraints`.
-        periods_per_year: Number of return observations per year.
+        periods_per_year: Number of return observations per year. Must be
+            positive: it annualizes the covariance, and zero made it the zero
+            matrix — which then solved to an "optimal" equal-weight book with
+            no risk at all.
         covariance_method: ``sample``, ``ledoit_wolf``, ``oas``,
             ``shrink`` (an alias for ``ledoit_wolf``),
             ``ewma``, ``semi``, or ``denoised`` (sample covariance filtered
             through the Marchenko-Pastur eigenvalue cutoff).
-        ewma_lambda: Decay used when ``covariance_method == "ewma"``.
+        ewma_lambda: Decay used when ``covariance_method == "ewma"``. Strictly
+            between 0 and 1, and checked whatever the method, since a value
+            outside that interval cannot mean anything.
         denoise: Apply the Marchenko-Pastur eigenvalue filter to the
             covariance estimate (López de Prado, 2020). Composable with any
             estimator; implied by ``covariance_method="denoised"``.
@@ -204,9 +251,13 @@ class EngineConfig:
             relative performance report and the benchmark-relative
             constraints below, so the report and the solve cannot disagree
             about what the benchmark is.
-        benchmark_weights: Explicit benchmark weight vector. Overrides
-            whatever ``benchmark`` would resolve to; kept because a caller
-            may have the vector without wanting to describe how it was built.
+        benchmark_weights: Explicit benchmark weight vector — shorthand for
+            ``benchmark: {kind: custom_weights, weights: ...}``, kept because a
+            caller may have the vector without wanting to describe how it was
+            built. Validated and normalized exactly like that spec: a name
+            outside the universe is refused, not dropped. Setting it alongside
+            a ``benchmark`` that says something else is refused too; see
+            :meth:`effective_benchmark`.
         max_tracking_error: Cap on annualized active risk versus the
             benchmark, ``√((w−b)'Σ(w−b))``. Imposed inside the solve by the
             mean-variance family, mean-CVaR/CDaR and active mean-variance;
@@ -223,7 +274,9 @@ class EngineConfig:
             has gross exposure of exactly 1.
         previous_weights: The portfolio being traded from. Needed for the
             turnover budget and for turnover reporting.
-        turnover_limit: Cap on ``Σ|w_i − w_prev,i|``. Honoured by the
+        turnover_limit: Cap on ``Σ|w_i − w_prev,i|``, summed over both books:
+            a previous holding the universe no longer contains is sold in
+            full and counts against the budget. Honoured by the
             mean-variance family and mean-CVaR; the homogeneous solves
             (max-Sharpe, max-diversification, risk parity) warn instead.
         strict_mandate: Refuse a book that breaches the mandate instead of
@@ -237,7 +290,13 @@ class EngineConfig:
             weightings — which can return a book their mandate does not permit;
             a turnover budget or a tracking-error cap is dropped by the
             projection entirely, and this is what turns that from a warning
-            into a stop.
+            into a stop. It also refuses, before the solve, a bound or a layer
+            assignment naming an asset the panel does not hold — otherwise a
+            warning — because a limit the author believes is binding and that
+            constrains nothing is a mandate breach nobody can see. That check
+            rides on the pre-solve analysis, so ``run_engine(...,
+            check_feasibility=False)`` — the walk-forward's per-window solve,
+            where a screened universe legitimately narrows — skips it.
         stress: Named one-period shock scenarios for the pre-trade stress
             report — see :mod:`optimization_engine.stress`. Applied by
             ``run_engine(..., run_stress=True)`` and by
@@ -279,23 +338,58 @@ class EngineConfig:
     stress: tuple[Shock, ...] = ()
 
     def __post_init__(self) -> None:
-        """Coerce the constraint layers and the stress scenarios into canonical form.
+        """Coerce the nested blocks into canonical form, and refuse impossible values.
 
         A config loaded from YAML has mappings where one built in memory has
-        :class:`~optimization_engine.constraints.ConstraintLayer` and
-        :class:`~optimization_engine.stress.Shock` objects; after this they
-        behave identically. It runs on direct construction too, so
+        :class:`~optimization_engine.constraints.ConstraintLayer`,
+        :class:`~optimization_engine.stress.Shock` and
+        :class:`~optimization_engine.benchmark.BenchmarkSpec` objects; after
+        this they behave identically. It runs on direct construction too, so
         ``EngineConfig(stress=[{"name": ..., "returns": ...}])`` is as valid as
         the loaded form, and a malformed scenario is refused where it was
         written rather than at the solve.
+
+        The switches are read with :func:`_as_bool` rather than ``bool()``,
+        and the two numbers that cannot take any value are checked here, where
+        they were written: each of them used to load, and then either solve to
+        a meaningless book or fail deep inside an estimator.
 
         Raises:
             LayerConfigurationError: If any layer entry is malformed.
             StressError: If any stress entry is malformed, or two scenarios
                 share a name.
+            BenchmarkError: If the benchmark block is malformed, or
+                ``benchmark_weights`` and ``benchmark`` name different
+                benchmarks.
+            ConfigurationError: If a switch is neither true nor false,
+                ``periods_per_year`` is not positive, or ``ewma_lambda`` is not
+                strictly between 0 and 1.
         """
+        from optimization_engine.optimizers import ConfigurationError
+
         self.constraint_layers = list(coerce_layers(self.constraint_layers))
         self.stress = shocks_from_dicts(self.stress)
+        self.benchmark = BenchmarkSpec.from_dict(self.benchmark)
+        self.effective_benchmark()
+        for key in _BOOLEAN_KEYS:
+            setattr(self, key, _as_bool(getattr(self, key), key))
+        periods = float(self.periods_per_year)
+        if not math.isfinite(periods) or periods <= 0:
+            raise ConfigurationError(
+                f"periods_per_year must be a positive number of return "
+                f"observations per year — 252 daily, 52 weekly, 12 monthly; got "
+                f"{self.periods_per_year!r}. It annualizes the covariance, and a "
+                "zero or negative one makes every risk figure meaningless."
+            )
+        decay = float(self.ewma_lambda)
+        if not 0.0 < decay < 1.0:
+            raise ConfigurationError(
+                f"ewma_lambda must lie strictly between 0 and 1; got "
+                f"{self.ewma_lambda!r}. The estimator weights the observation k "
+                "periods back by (1 - lambda) * lambda**k: at 0 the covariance "
+                "rests on a single day, at 1 every weight is zero, and above 1 "
+                "they turn negative."
+            )
 
     @property
     def assets(self) -> list[str]:
@@ -307,31 +401,78 @@ class EngineConfig:
     ) -> dict[str, float] | None:
         """The benchmark's weights, or ``None`` when it has none.
 
-        An explicit ``benchmark_weights`` vector wins over the spec: a caller
-        that supplied the numbers directly meant those numbers. Otherwise the
-        spec is expanded over ``assets`` — which matters for the rule-based
-        kinds, since 1/N over ten assets is a different portfolio from 1/N
-        over twelve.
+        :meth:`effective_benchmark` expanded over ``assets`` — which matters
+        for the rule-based kinds, since 1/N over ten assets is a different
+        portfolio from 1/N over twelve, and for an explicit vector, which is
+        checked against the universe and normalized rather than taken as
+        written. It used to be taken as written: a 60/40 whose 60 named an
+        asset outside the universe became a benchmark summing to 0.4, and a
+        tracking-error budget was imposed against that.
 
         Args:
             assets: The universe to expand the spec over. ``None`` uses the
-                config's own.
+                config's own; with no universe at all, an explicit vector is
+                taken over the names it lists.
 
         Returns:
             ``asset -> weight``, or ``None``. An external-index benchmark has no
             weights in the investable universe and correctly returns ``None``.
 
         Raises:
-            BenchmarkError: If the spec names an asset or weights the universe
-                does not contain.
+            BenchmarkError: If the benchmark names an asset or weights the
+                universe does not contain, its weights sum to zero under
+                ``normalize``, or :meth:`effective_benchmark` refuses.
         """
-        if self.benchmark_weights:
-            return {str(k): float(v) for k, v in self.benchmark_weights.items()}
+        spec = self.effective_benchmark()
         universe = list(assets) if assets else self.assets
-        if not universe or not self.benchmark.has_weights:
+        if not universe and spec.kind == "custom_weights" and spec.weights:
+            universe = list(spec.weights)
+        if not universe or not spec.has_weights:
             return None
-        weights = self.benchmark.weight_vector(universe)
+        weights = spec.weight_vector(universe)
         return None if weights is None else {str(k): float(v) for k, v in weights.items()}
+
+    def effective_benchmark(self) -> BenchmarkSpec:
+        """The one benchmark every part of a run measures against.
+
+        The solve's tracking-error and active-share limits, the benchmark
+        return stream, the performance report and the active analytics all
+        resolve from this. They used not to: ``benchmark_weights`` drove the
+        constraints while ``benchmark`` drove the report, so with
+        ``benchmark=equal_weight`` and a 60/40 vector the solve held tracking
+        error to 3% against 60/40 while the report measured 5.6% against 1/N.
+
+        ``benchmark_weights`` is read as a ``custom_weights`` spec. Alone, it is
+        the benchmark; next to a ``custom_weights`` spec carrying the same
+        weights, the spec is, with its label and rebalance rule. Next to
+        anything else there are two benchmarks, and choosing one by a
+        precedence rule nobody can see is how the report and the solve came to
+        disagree — so that is refused.
+
+        Returns:
+            The :class:`~optimization_engine.benchmark.BenchmarkSpec` to use.
+
+        Raises:
+            BenchmarkError: If ``benchmark_weights`` and ``benchmark`` name
+                different benchmarks.
+        """
+        spec = BenchmarkSpec.from_dict(self.benchmark)
+        if not self.benchmark_weights:
+            return spec
+        explicit = BenchmarkSpec(
+            kind="custom_weights", weights=dict(self.benchmark_weights)
+        )
+        if not spec.is_active:
+            return explicit
+        if spec.kind == "custom_weights" and spec.weights == explicit.weights:
+            return spec
+        raise BenchmarkError(
+            f"The config names two benchmarks: benchmark_weights "
+            f"{explicit.weights} and a {spec.kind!r} benchmark "
+            f"({spec.display_label}). The solve, the report and the active "
+            "analytics have to measure against one. Keep benchmark_weights and "
+            "set benchmark to none, or drop benchmark_weights."
+        )
 
     def get_bounds(self, asset: str, default: tuple[float, float] = (0.0, 1.0)) -> tuple[float, float]:
         """The weight bounds for one asset.
@@ -380,7 +521,10 @@ class EngineConfig:
             "market_weights": (dict(self.market_weights) if self.market_weights else None),
             "optimizer": self.optimizer.to_dict(),
             "benchmark": self.benchmark.to_dict(),
-            "benchmark_weights": self.benchmark_weights,
+            "benchmark_weights": (
+                dict(self.benchmark_weights)
+                if self.benchmark_weights is not None else None
+            ),
             "max_tracking_error": self.max_tracking_error,
             "max_active_share": self.max_active_share,
             "long_only": self.long_only,
@@ -414,7 +558,10 @@ class EngineConfig:
             ConfigurationError: If the mapping carries a key this class does
                 not read, or the optimizer block carries one
                 :class:`OptimizerSpec` does not. A misspelt ``max_tracking_eror``
-                used to load cleanly and simply not constrain anything.
+                used to load cleanly and simply not constrain anything. Also
+                for a value :meth:`__post_init__` refuses — a switch that is
+                neither true nor false, a non-positive ``periods_per_year``, an
+                ``ewma_lambda`` outside ``(0, 1)``.
             LayerConfigurationError: If a constraint layer is malformed.
             BenchmarkError: If the benchmark block is malformed.
             StressError: If the ``stress`` block is not a list of scenario
@@ -450,7 +597,9 @@ class EngineConfig:
             periods_per_year=int(data.get("periods_per_year", 252)),
             covariance_method=str(data.get("covariance_method", "ledoit_wolf")),
             ewma_lambda=float(data.get("ewma_lambda", 0.94)),
-            denoise=bool(data.get("denoise", False)),
+            # The switches go in raw: ``__post_init__`` reads them with
+            # ``_as_bool``, because ``bool("false")`` is ``True``.
+            denoise=data.get("denoise", False),
             denoise_method=str(data.get("denoise_method", "constant_residual")),
             denoise_alpha=float(data.get("denoise_alpha", 0.0)),
             detone=int(data.get("detone", 0) or 0),
@@ -466,9 +615,15 @@ class EngineConfig:
                 dict(data["market_weights"])
                 if data.get("market_weights") else None
             ),
-            optimizer=OptimizerSpec(**opt_raw),
+            # Copied, so the config does not share risk_budget, the views or
+            # ``extra`` with the mapping it was read from — editing that
+            # mapping afterwards used to edit the config too.
+            optimizer=OptimizerSpec(**copy.deepcopy(dict(opt_raw))),
             benchmark=BenchmarkSpec.from_dict(data.get("benchmark")),
-            benchmark_weights=data.get("benchmark_weights"),
+            benchmark_weights=(
+                dict(data["benchmark_weights"])
+                if data.get("benchmark_weights") is not None else None
+            ),
             max_tracking_error=(
                 float(data["max_tracking_error"])
                 if data.get("max_tracking_error") is not None
@@ -479,8 +634,8 @@ class EngineConfig:
                 if data.get("max_active_share") is not None
                 else None
             ),
-            long_only=bool(data.get("long_only", True)),
-            fully_invested=bool(data.get("fully_invested", True)),
+            long_only=data.get("long_only", True),
+            fully_invested=data.get("fully_invested", True),
             leverage=(
                 float(data["leverage"]) if data.get("leverage") is not None else None
             ),
@@ -492,7 +647,7 @@ class EngineConfig:
                 if data.get("turnover_limit") is not None
                 else None
             ),
-            strict_mandate=bool(data.get("strict_mandate", False)),
+            strict_mandate=data.get("strict_mandate", False),
             stress=shocks_from_dicts(data.get("stress")),
         )
 

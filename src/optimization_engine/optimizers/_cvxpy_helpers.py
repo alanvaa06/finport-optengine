@@ -484,7 +484,19 @@ def build_constraints(
         prev = np.array(
             [float(constraints.previous_weights.get(a, 0.0)) for a in assets]
         )
-        cons.append(cp.norm(weights - prev, 1) <= float(constraints.turnover_limit))
+        # A holding outside ``assets`` cannot be kept, so it is sold whatever
+        # the solve decides: a constant on the left side of the budget, not a
+        # free trade. With 30% in a departed name and a 50% budget, leaving it
+        # out let the solve trade 50% inside the universe — 80% in all.
+        universe = set(assets)
+        departed = sum(
+            abs(float(w))
+            for a, w in constraints.previous_weights.items()
+            if a not in universe
+        )
+        cons.append(
+            cp.norm(weights - prev, 1) + departed <= float(constraints.turnover_limit)
+        )
 
     cons.extend(benchmark_constraints(weights, assets, constraints, cov_matrix))
 

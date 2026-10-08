@@ -336,11 +336,10 @@ def test_a_non_psd_shock_matrix_raises(weights: pd.Series, cov_matrix: pd.DataFr
     bad = pd.DataFrame(
         [[1.0, 5.0], [5.0, 1.0]], index=["A", "B"], columns=["A", "B"]
     )
-    book = pd.Series({"A": 1.0, "B": -1.0})
-    base = pd.DataFrame(np.eye(2), index=["A", "B"], columns=["A", "B"])
-    shock = Shock("X", {"A": -0.1}, covariance_scale=bad)
+    # Refused where it is written now, not only for a book that happens to
+    # load on the negative eigenvector.
     with pytest.raises(StressError, match="not positive semi-definite"):
-        stress_test(book, [shock], cov_matrix=base)
+        Shock("X", {"A": -0.1}, covariance_scale=bad)
 
 
 # ---------------------------------------------------------------------------
