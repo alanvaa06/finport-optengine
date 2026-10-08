@@ -38,7 +38,7 @@ from optimization_engine.optimizers._cvxpy_helpers import (
     homogeneous_ignored_constraints,
     solve_problem,
 )
-from optimization_engine.optimizers.base import BaseOptimizer
+from optimization_engine.optimizers.base import BaseOptimizer, zero_variance_assets
 
 
 class MaxDiversificationOptimizer(BaseOptimizer):
@@ -57,14 +57,14 @@ class MaxDiversificationOptimizer(BaseOptimizer):
         sigma = self._sigma_matrix()
         if sigma is None:
             raise ValueError("Covariance matrix required")
-        std = np.sqrt(np.diag(sigma))
-        if not (std > 0).all():
-            zero = [a for a, s in zip(self.assets, std) if s <= 0]
+        zero = zero_variance_assets(self.assets, np.diag(sigma))
+        if zero:
             raise ValueError(
                 f"Zero-variance asset(s) {zero}: the diversification ratio is "
                 "undefined when an asset has no volatility. Drop them from the "
                 "universe."
             )
+        std = np.sqrt(np.diag(sigma))
 
         ignored = homogeneous_ignored_constraints(
             self.constraints, "Max-diversification"

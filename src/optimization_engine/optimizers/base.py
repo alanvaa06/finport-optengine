@@ -89,6 +89,38 @@ def check_covariance_psd(sigma: np.ndarray | None) -> None:
         raise NonPSDCovarianceError(smallest, trace)
 
 
+#: A variance at or below this fraction of the largest one in the matrix is
+#: rounding residue, not risk. A constant column's sample variance is not 0 but
+#: about ``(ε·level)²`` — 1.86e-37 for a flat 0.01% a day, beside 2.6e-2 for an
+#: equity — while a genuinely quiet asset sits within a few orders of the rest
+#: (the sample panel's cash line, at 0.5% volatility, is 1e-3 of the largest).
+ZERO_VARIANCE_RTOL = 1e-12
+
+
+def zero_variance_assets(assets: list, variances: np.ndarray) -> list:
+    """The assets whose variance is zero for every purpose a weight cares about.
+
+    The one test every guard against a degenerate column shares. Comparing with
+    an exact 0 missed constant series, whose sample variance is rounding, and
+    inverse volatility and HRP then put the whole book in them. The scale is
+    the *largest* variance rather than the median, so a universe in which
+    several columns are constant still flags every one of them.
+
+    Args:
+        assets: Asset names, aligned to ``variances``.
+        variances: Per-asset variances, in any consistent units.
+
+    Returns:
+        The assets whose variance is non-finite, non-positive, or at most
+        ``ZERO_VARIANCE_RTOL`` times the largest variance — in input order.
+    """
+    values = np.asarray(variances, dtype=float)
+    finite = values[np.isfinite(values)]
+    scale = float(np.abs(finite).max()) if finite.size else 0.0
+    degenerate = ~(values > ZERO_VARIANCE_RTOL * scale)
+    return [a for a, flag in zip(assets, degenerate) if flag]
+
+
 @dataclass
 class PortfolioConstraints:
     """Bounds, group constraints, exposure limits and a turnover budget.

@@ -285,6 +285,52 @@ def test_a_covariance_on_the_psd_boundary_still_solves(returns: pd.DataFrame):
     assert weights.sum() == pytest.approx(1.0, abs=1e-6)
 
 
+@pytest.mark.parametrize("name", ["inverse_vol", "hrp", "herc", "nco", "max_diversification"])
+def test_a_constant_column_is_zero_variance_even_with_rounding(name: str):
+    """A constant series is not low-risk; its sample variance is rounding.
+
+    A cash column at a flat 0.01% a day has sample variance 1.86e-37, not 0,
+    so the ``σ > 0`` guards let it through: inverse volatility and HRP put
+    100% of the book in it, against the 0.7.0 changelog's "inverse volatility
+    refuses a zero-variance asset". The guards are now relative to the largest
+    variance in the matrix, so rounding residue counts as zero and a genuinely
+    quiet asset does not.
+    """
+    from optimization_engine.optimizers.factory import optimizer_factory
+
+    rng = np.random.default_rng(1)
+    history = pd.DataFrame(
+        rng.standard_normal((500, 4)) * 0.01 + 0.0004,
+        columns=["w", "x", "y", "z"],
+        index=pd.bdate_range("2020-01-01", periods=500),
+    )
+    history["cash"] = 0.0001
+    cov = covariance_matrix(history, method="sample")
+    assert 0.0 < cov.loc["cash", "cash"] < 1e-30, "fixture no longer rounds"
+
+    optimizer = optimizer_factory(
+        EngineConfig(optimizer=OptimizerSpec(name=name)), cov, returns=history
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(ValueError, match="(?i)zero-variance") as raised:
+            optimizer.optimize()
+    assert "cash" in str(raised.value)
+
+
+def test_a_quiet_asset_is_not_mistaken_for_a_constant_one(returns: pd.DataFrame):
+    """The sample panel's Cash line has 0.5% volatility and must still be held."""
+    from optimization_engine.optimizers.hrp import HRPOptimizer
+    from optimization_engine.optimizers.naive import InverseVolatilityOptimizer
+
+    cov = covariance_matrix(returns, method="sample")
+    quiet = cov.values.diagonal().argmin()
+    assert cov.values.diagonal()[quiet] < 1e-3 * cov.values.diagonal().max()
+    for optimizer in (InverseVolatilityOptimizer, HRPOptimizer):
+        weights = optimizer(cov_matrix=cov).optimize().weights
+        assert weights.iloc[quiet] > 0.0
+
+
 def test_cvar_extras_keys(returns: pd.DataFrame, baseline_config: EngineConfig):
     """``√ppy`` scaling is reported under a name that says what it is.
 
