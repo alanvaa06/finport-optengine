@@ -490,3 +490,27 @@ def test_root_on_the_command_line_overrides_the_environment(tmp_path, monkeypatc
     monkeypatch.setattr(server.mcp, "run", lambda **kwargs: None)
     server.main(["--root", str(tmp_path)])
     assert server.allowed_roots() == (tmp_path.resolve(),)
+
+
+def test_every_tool_names_its_data_source(tmp_path):
+    """The CLI's `data_source`, filled in over the protocol too."""
+    from optimization_engine.data.loader import sample_dataset
+
+    csv = tmp_path / "prices.csv"
+    sample_dataset(n_periods=600)[["US_Equity", "Gold", "US_Treasuries"]].to_csv(
+        csv, index_label="date"
+    )
+    for tool, extra in (
+        ("optimize", {}),
+        ("check_mandate", {}),
+        ("backtest", {"lookback": 252, "rebalance_every": 63}),
+    ):
+        synthetic = call(tool, {"sample": True, "optimizer": "risk_parity", **extra})
+        assert synthetic["data_source"] == {
+            "kind": "sample", "synthetic": True, "path": None,
+            "provider": None, "identifiers": None,
+        }, tool
+        named = call(tool, {"prices_path": str(csv), "optimizer": "risk_parity", **extra})
+        assert named["data_source"]["kind"] == "file", tool
+        assert named["data_source"]["path"] == str(csv), tool
+        assert named["data_source"]["synthetic"] is False, tool

@@ -402,6 +402,21 @@ def _panel(
     return aligned, returns, actions, quality
 
 
+def _source(sample: bool, prices_path: str | None) -> dict[str, Any]:
+    """The panel a result was computed on, in the CLI's ``data_source`` shape.
+
+    ``_panel`` has already refused anything but exactly one of the two, so
+    this only describes; the path is the one the client named.
+    """
+    return {
+        "kind": "sample" if sample else "file",
+        "synthetic": bool(sample),
+        "path": None if sample else prices_path,
+        "provider": None,
+        "identifiers": None,
+    }
+
+
 def _annualize(config: Any, config_path: str | None, index: pd.Index) -> None:
     """Set the annualization factor from the dates, refusing a contradiction."""
     from optimization_engine.config import stated_keys
@@ -582,7 +597,13 @@ def check_mandate(
         expected_returns=effective_expected_returns(config, cov, mu),
         cov_matrix=cov,
     )
-    return check_payload(quality, feasibility, diagnostics, alignment=alignment)
+    return check_payload(
+        quality,
+        feasibility,
+        diagnostics,
+        alignment=alignment,
+        data_source=_source(sample, prices_path),
+    )
 
 
 @mcp.tool(
@@ -637,7 +658,12 @@ def optimize(
         raise ToolError(f"The mandate has no solution: {exc}") from exc
     except SolverFailure as exc:
         raise ToolError(f"No solver could produce an allocation: {exc}") from exc
-    return optimization_payload(run, alignment=alignment, quality=quality)
+    return optimization_payload(
+        run,
+        alignment=alignment,
+        quality=quality,
+        data_source=_source(sample, prices_path),
+    )
 
 
 @mcp.tool(
@@ -734,6 +760,7 @@ def backtest(
         tearsheet=run.tearsheet(walk.run),
         alignment=alignment,
         quality=quality,
+        data_source=_source(sample, prices_path),
     )
 
 
