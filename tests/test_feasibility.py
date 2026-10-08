@@ -390,3 +390,33 @@ def _raiser(exc: BaseException):
         raise exc
 
     return _boom
+
+
+def test_a_return_floor_below_the_reachable_range_is_a_warning():
+    """Every allocation clears a floor below the range, so nothing is impossible.
+
+    Since 0.7.0 ``target_return`` is a floor (``μ'w ≥ R*``), not an equality,
+    and the solve with a 1% floor on this box succeeds with the floor slack.
+    The pre-flight still called it fatal — written when the target was an
+    equality — so ``raise_on_infeasible`` (the CLI's ``--strict``) refused a
+    mandate the optimizer answers: reachable 5.10%–10.70%, target 1%,
+    ``is_feasible=False``.
+    """
+    from optimization_engine.optimizers.mean_variance import MeanVarianceOptimizer
+
+    cons = PortfolioConstraints(
+        bounds={a: (0.10, 0.40) for a in ASSETS}, target_return=0.01
+    )
+
+    report = analyze_feasibility(ASSETS, cons, MU, COV)
+
+    assert report.min_return == pytest.approx(0.051)
+    found = issue(report, "target_return_too_low")
+    assert not found.fatal
+    assert report.is_feasible
+    assert "floor" in found.suggestion
+
+    solved = MeanVarianceOptimizer(
+        expected_returns=MU, cov_matrix=COV, constraints=cons
+    ).optimize()
+    assert solved.extras["target_return_binding"] is False
