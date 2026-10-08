@@ -726,9 +726,10 @@ def _apply_benchmark_flags(
     raw = getattr(args, "benchmark", None)
     if raw:
         value = str(raw).strip()
+        # The flag replaces the config's benchmark, an explicit vector included.
+        config.benchmark_weights = None
         if value.lower() in ("none", "off"):
             config.benchmark = BenchmarkSpec(kind="none")
-            config.benchmark_weights = None
         elif value.lower() in ("equal_weight", "equal-weight", "ew", "1/n"):
             config.benchmark = BenchmarkSpec(kind="equal_weight")
         elif value in assets:

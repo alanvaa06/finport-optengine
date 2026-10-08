@@ -18,7 +18,7 @@ from typing import Any, Literal
 import numpy as np
 import yaml
 
-from optimization_engine.benchmark import BenchmarkSpec
+from optimization_engine.benchmark import BenchmarkError, BenchmarkSpec
 from optimization_engine.constraints import ConstraintLayer, coerce_layers
 from optimization_engine.stress import Shock, shocks_from_dicts, shocks_to_dicts
 
@@ -251,9 +251,13 @@ class EngineConfig:
             relative performance report and the benchmark-relative
             constraints below, so the report and the solve cannot disagree
             about what the benchmark is.
-        benchmark_weights: Explicit benchmark weight vector. Overrides
-            whatever ``benchmark`` would resolve to; kept because a caller
-            may have the vector without wanting to describe how it was built.
+        benchmark_weights: Explicit benchmark weight vector — shorthand for
+            ``benchmark: {kind: custom_weights, weights: ...}``, kept because a
+            caller may have the vector without wanting to describe how it was
+            built. Validated and normalized exactly like that spec: a name
+            outside the universe is refused, not dropped. Setting it alongside
+            a ``benchmark`` that says something else is refused too; see
+            :meth:`effective_benchmark`.
         max_tracking_error: Cap on annualized active risk versus the
             benchmark, ``√((w−b)'Σ(w−b))``. Imposed inside the solve by the
             mean-variance family, mean-CVaR/CDaR and active mean-variance;
@@ -354,7 +358,9 @@ class EngineConfig:
             LayerConfigurationError: If any layer entry is malformed.
             StressError: If any stress entry is malformed, or two scenarios
                 share a name.
-            BenchmarkError: If the benchmark block is malformed.
+            BenchmarkError: If the benchmark block is malformed, or
+                ``benchmark_weights`` and ``benchmark`` name different
+                benchmarks.
             ConfigurationError: If a switch is neither true nor false,
                 ``periods_per_year`` is not positive, or ``ewma_lambda`` is not
                 strictly between 0 and 1.
@@ -364,6 +370,7 @@ class EngineConfig:
         self.constraint_layers = list(coerce_layers(self.constraint_layers))
         self.stress = shocks_from_dicts(self.stress)
         self.benchmark = BenchmarkSpec.from_dict(self.benchmark)
+        self.effective_benchmark()
         for key in _BOOLEAN_KEYS:
             setattr(self, key, _as_bool(getattr(self, key), key))
         periods = float(self.periods_per_year)
@@ -393,31 +400,78 @@ class EngineConfig:
     ) -> dict[str, float] | None:
         """The benchmark's weights, or ``None`` when it has none.
 
-        An explicit ``benchmark_weights`` vector wins over the spec: a caller
-        that supplied the numbers directly meant those numbers. Otherwise the
-        spec is expanded over ``assets`` — which matters for the rule-based
-        kinds, since 1/N over ten assets is a different portfolio from 1/N
-        over twelve.
+        :meth:`effective_benchmark` expanded over ``assets`` — which matters
+        for the rule-based kinds, since 1/N over ten assets is a different
+        portfolio from 1/N over twelve, and for an explicit vector, which is
+        checked against the universe and normalized rather than taken as
+        written. It used to be taken as written: a 60/40 whose 60 named an
+        asset outside the universe became a benchmark summing to 0.4, and a
+        tracking-error budget was imposed against that.
 
         Args:
             assets: The universe to expand the spec over. ``None`` uses the
-                config's own.
+                config's own; with no universe at all, an explicit vector is
+                taken over the names it lists.
 
         Returns:
             ``asset -> weight``, or ``None``. An external-index benchmark has no
             weights in the investable universe and correctly returns ``None``.
 
         Raises:
-            BenchmarkError: If the spec names an asset or weights the universe
-                does not contain.
+            BenchmarkError: If the benchmark names an asset or weights the
+                universe does not contain, its weights sum to zero under
+                ``normalize``, or :meth:`effective_benchmark` refuses.
         """
-        if self.benchmark_weights:
-            return {str(k): float(v) for k, v in self.benchmark_weights.items()}
+        spec = self.effective_benchmark()
         universe = list(assets) if assets else self.assets
-        if not universe or not self.benchmark.has_weights:
+        if not universe and spec.kind == "custom_weights" and spec.weights:
+            universe = list(spec.weights)
+        if not universe or not spec.has_weights:
             return None
-        weights = self.benchmark.weight_vector(universe)
+        weights = spec.weight_vector(universe)
         return None if weights is None else {str(k): float(v) for k, v in weights.items()}
+
+    def effective_benchmark(self) -> BenchmarkSpec:
+        """The one benchmark every part of a run measures against.
+
+        The solve's tracking-error and active-share limits, the benchmark
+        return stream, the performance report and the active analytics all
+        resolve from this. They used not to: ``benchmark_weights`` drove the
+        constraints while ``benchmark`` drove the report, so with
+        ``benchmark=equal_weight`` and a 60/40 vector the solve held tracking
+        error to 3% against 60/40 while the report measured 5.6% against 1/N.
+
+        ``benchmark_weights`` is read as a ``custom_weights`` spec. Alone, it is
+        the benchmark; next to a ``custom_weights`` spec carrying the same
+        weights, the spec is, with its label and rebalance rule. Next to
+        anything else there are two benchmarks, and choosing one by a
+        precedence rule nobody can see is how the report and the solve came to
+        disagree — so that is refused.
+
+        Returns:
+            The :class:`~optimization_engine.benchmark.BenchmarkSpec` to use.
+
+        Raises:
+            BenchmarkError: If ``benchmark_weights`` and ``benchmark`` name
+                different benchmarks.
+        """
+        spec = BenchmarkSpec.from_dict(self.benchmark)
+        if not self.benchmark_weights:
+            return spec
+        explicit = BenchmarkSpec(
+            kind="custom_weights", weights=dict(self.benchmark_weights)
+        )
+        if not spec.is_active:
+            return explicit
+        if spec.kind == "custom_weights" and spec.weights == explicit.weights:
+            return spec
+        raise BenchmarkError(
+            f"The config names two benchmarks: benchmark_weights "
+            f"{explicit.weights} and a {spec.kind!r} benchmark "
+            f"({spec.display_label}). The solve, the report and the active "
+            "analytics have to measure against one. Keep benchmark_weights and "
+            "set benchmark to none, or drop benchmark_weights."
+        )
 
     def get_bounds(self, asset: str, default: tuple[float, float] = (0.0, 1.0)) -> tuple[float, float]:
         """The weight bounds for one asset.

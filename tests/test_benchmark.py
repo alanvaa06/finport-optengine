@@ -215,13 +215,15 @@ def test_one_over_n_depends_on_the_universe_it_is_asked_about():
     assert three["A"] == pytest.approx(1 / 3)
 
 
-def test_explicit_weights_win_over_the_spec():
+def test_explicit_weights_are_the_benchmark_when_no_spec_says_otherwise():
+    # They used to *win over* a spec that said something else — in the
+    # constraints only, while the report kept the spec (review E7). Two
+    # different benchmarks are now refused; see test_benchmark_single_source.
     cfg = EngineConfig(
         expected_returns={"A": 0.05, "B": 0.07},
-        benchmark=BenchmarkSpec(kind="equal_weight"),
         benchmark_weights={"A": 1.0},
     )
-    assert cfg.benchmark_weight_map() == {"A": 1.0}
+    assert cfg.benchmark_weight_map() == {"A": 1.0, "B": 0.0}
 
 
 def test_external_benchmark_has_no_weight_map():
@@ -299,7 +301,13 @@ def test_active_mean_variance_reduces_to_mean_variance_at_zero_benchmark(returns
         _config(
             returns,
             optimizer=OptimizerSpec(name="active_mean_variance", risk_aversion=4.0),
-            benchmark_weights={a: 0.0 for a in returns.columns},
+            # A zero benchmark has to say it is not to be normalized, now that
+            # the benchmark_weights shorthand is normalized like the spec.
+            benchmark=BenchmarkSpec(
+                kind="custom_weights",
+                weights={a: 0.0 for a in returns.columns},
+                normalize=False,
+            ),
         ),
     ).result.weights
     # Same objective up to a constant shift, so the same portfolio.

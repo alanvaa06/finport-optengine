@@ -269,10 +269,15 @@ class EngineRun:
                 equal weights would invent a benchmark nobody chose.
         """
         assets = list(self.result.weights.index)
-        weights = self.config.benchmark_weight_map(assets)
-        if weights is None and self.benchmark is not None:
+        # The benchmark resolved at solve time first, as ``performance()`` reads
+        # it — this used to ask the config first, and so disagreed with the
+        # report whenever the config carried two benchmarks.
+        weights: dict | None
+        if self.benchmark is not None:
             resolved = self.benchmark.weights
             weights = None if resolved is None else resolved.to_dict()
+        else:
+            weights = self.config.benchmark_weight_map(assets)
         if not weights:
             raise ValueError(
                 "This run has no position-based benchmark, so there are no "
@@ -1216,7 +1221,11 @@ def run_engine(
         config, returns, cov, expected_returns
     )
 
-    benchmark = resolve_benchmark(config.benchmark, returns, external_returns)
+    # The same spec constraints_from_config reads through benchmark_weight_map,
+    # so the stream reported against is the vector the solve was held to.
+    benchmark = resolve_benchmark(
+        config.effective_benchmark(), returns, external_returns
+    )
     constraints = constraints_from_config(config, list(returns.columns))
     # Before the feasibility LP, not after: a budget with no benchmark to
     # measure it against is a configuration error, and the LP would otherwise
