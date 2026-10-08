@@ -386,8 +386,9 @@ class EngineConfig:
             raise ConfigurationError(
                 f"ewma_lambda must lie strictly between 0 and 1; got "
                 f"{self.ewma_lambda!r}. The estimator weights the observation k "
-                "periods back by (1 − λ)·λᵏ: at 0 the covariance rests on a single "
-                "day, at 1 every weight is zero, and above 1 they turn negative."
+                "periods back by (1 - lambda) * lambda**k: at 0 the covariance "
+                "rests on a single day, at 1 every weight is zero, and above 1 "
+                "they turn negative."
             )
 
     @property
