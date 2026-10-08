@@ -104,6 +104,7 @@ class RiskParityOptimizer(BaseOptimizer):
         # Strict positivity for the log-barrier; tighten lb a hair if zero.
         lb_pos = np.maximum(lb_arr, 1e-8)
 
+        ignored: list[str] = []
         if self.constraints.turnover_limit is not None:
             warnings.warn(
                 "Risk parity ignores the turnover budget: the log-barrier "
@@ -111,7 +112,20 @@ class RiskParityOptimizer(BaseOptimizer):
                 "defined.",
                 stacklevel=3,
             )
-            self._diagnostics["ignored_constraints"] = ["turnover_limit"]
+            ignored.append("turnover_limit")
+        if not self.constraints.fully_invested:
+            # The weights are the ray normalized to sum to one, so an open
+            # budget never reaches the answer. It used to be dropped without
+            # a word, where max-Sharpe and max-diversification report it.
+            warnings.warn(
+                "Risk parity ignores fully_invested=False: risk shares are "
+                "defined on the normalized book, and the weights it returns "
+                "always sum to one. Size the result against cash separately.",
+                stacklevel=3,
+            )
+            ignored.append("fully_invested")
+        if ignored:
+            self._diagnostics["ignored_constraints"] = ignored
 
         y = cp.Variable(n, pos=True)
         sigma_psd = cp.psd_wrap(sigma)

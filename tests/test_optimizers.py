@@ -510,6 +510,90 @@ def test_factory_warns_on_incompatible_target_return(returns, baseline_config, c
     assert any("target_return" in r.message for r in caplog.records)
 
 
+@pytest.mark.parametrize(
+    ("name", "target"),
+    [("max_sharpe", {"target_return": 0.50}), ("risk_parity", {"target_volatility": 0.001})],
+)
+def test_an_ignored_target_is_recorded_and_not_preflighted(
+    returns, baseline_config, name: str, target: dict
+):
+    """A target the method ignores is said to be ignored, and is not judged.
+
+    Max-Sharpe asked for 9.5% delivered 7.19% and risk parity asked for 2%
+    volatility delivered 7.18%, with only a log line to say so: nothing in
+    ``extras``, nothing in the violations. Meanwhile the pre-flight validated
+    the target the solve would ignore, so an unreachable one was a fatal
+    finding and ``raise_on_infeasible`` refused a solve that never looks at it.
+    """
+    cfg = EngineConfig(
+        expected_returns=baseline_config.expected_returns,
+        bounds=baseline_config.bounds,
+        optimizer=OptimizerSpec(name=name, risk_free_rate=0.0, **target),
+    )
+
+    run = run_engine(returns, cfg, raise_on_infeasible=True)
+
+    (field,) = target
+    assert field in run.result.extras["ignored_constraints"]
+    assert not [i for i in run.feasibility.issues if "target" in i.code]
+
+
+@pytest.mark.parametrize("name", ["max_sharpe", "risk_parity"])
+def test_an_ignored_target_is_recorded_on_the_direct_api_too(returns, name: str):
+    """The record comes from the optimizer, not only from the config path."""
+    from optimization_engine.optimizers.base import PortfolioConstraints
+    from optimization_engine.optimizers.mean_variance import MaxSharpeOptimizer
+    from optimization_engine.optimizers.risk_parity import RiskParityOptimizer
+
+    cov = covariance_matrix(returns, method="sample")
+    mu = pd.Series(0.06, index=cov.columns) + np.linspace(0, 0.04, len(cov))
+    constraints = PortfolioConstraints(target_return=0.095, target_volatility=0.02)
+    if name == "max_sharpe":
+        optimizer = MaxSharpeOptimizer(
+            expected_returns=mu, cov_matrix=cov, constraints=constraints
+        )
+    else:
+        optimizer = RiskParityOptimizer(cov_matrix=cov, constraints=constraints)
+
+    ignored = optimizer.optimize().extras["ignored_constraints"]
+    assert {"target_return", "target_volatility"} <= set(ignored)
+
+
+def test_risk_parity_records_that_it_ignores_an_open_budget(returns):
+    """Risk parity normalizes to one whatever the budget says, and now says so."""
+    from optimization_engine.optimizers.base import PortfolioConstraints
+    from optimization_engine.optimizers.risk_parity import RiskParityOptimizer
+
+    cov = covariance_matrix(returns, method="sample")
+    optimizer = RiskParityOptimizer(
+        cov_matrix=cov, constraints=PortfolioConstraints(fully_invested=False)
+    )
+    with pytest.warns(UserWarning, match="fully_invested=False"):
+        result = optimizer.optimize()
+    assert "fully_invested" in result.extras["ignored_constraints"]
+    assert result.weights.sum() == pytest.approx(1.0, abs=1e-6)
+
+
+def test_min_variance_says_how_much_an_open_budget_invests(returns):
+    """With no budget the lowest-variance book is close to empty, and says so.
+
+    It came back as weights around 1e-4, ``optimal``, a NaN Sharpe and nothing
+    else. Minimum variance does honour the open budget — the pre-flight relies
+    on exactly that solve for the volatility floor of an open-budget mandate —
+    so the answer stands, with the invested fraction and a note beside it.
+    """
+    from optimization_engine.optimizers.base import PortfolioConstraints
+    from optimization_engine.optimizers.mean_variance import MinVarianceOptimizer
+
+    cov = covariance_matrix(returns, method="sample")
+    result = MinVarianceOptimizer(
+        cov_matrix=cov, constraints=PortfolioConstraints(fully_invested=False)
+    ).optimize()
+
+    assert 0.0 <= result.extras["invested_fraction"] < 0.01  # solver tolerance
+    assert "open budget" in result.extras["budget_note"]
+
+
 @pytest.mark.parametrize("linkage", ["single", "average", "complete", "ward"])
 def test_hrp_linkage_methods(returns, baseline_config, linkage):
     cfg = EngineConfig(

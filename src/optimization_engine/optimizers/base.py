@@ -519,6 +519,11 @@ class BaseOptimizer(ABC):
             "bounds_mode": self.bounds_mode,
             **self._diagnostics,
         }
+        unsupported = self._unsupported_targets()
+        if unsupported:
+            extras["ignored_constraints"] = list(
+                dict.fromkeys([*extras.get("ignored_constraints", []), *unsupported])
+            )
         audit: AuditReport | None = None
         if run_post_solve_diagnostics:
             extras.update(self._post_solve_diagnostics(w))
@@ -536,6 +541,37 @@ class BaseOptimizer(ABC):
             extras=extras,
             audit=audit,
         )
+
+    def _unsupported_targets(self) -> list[str]:
+        """The return and volatility targets set on a method that ignores them.
+
+        Max-Sharpe asked for 9.5% delivered 7.19%, and risk parity asked for 2%
+        volatility delivered 7.18%, with nothing in the result to say the
+        target had never entered the solve — only a log line, and only on the
+        config path. The registry already knows which methods take a target, so
+        the result says so here, for every entry point. No warning: the
+        factory logs one for a configured run, and this also runs for the
+        pre-flight's internal minimum-variance solve, where a target it does
+        not use is expected.
+
+        Returns:
+            ``"target_return"`` and/or ``"target_volatility"``, or an empty
+            list for a method the registry does not know.
+        """
+        from optimization_engine.optimizers.requirements import REQUIREMENTS
+
+        req = REQUIREMENTS.get(self.name)
+        if req is None:
+            return []
+        out: list[str] = []
+        if self.constraints.target_return is not None and not req.supports_target_return:
+            out.append("target_return")
+        if (
+            self.constraints.target_volatility is not None
+            and not req.supports_target_volatility
+        ):
+            out.append("target_volatility")
+        return out
 
     def _audit(self, diagnostics: Any) -> AuditReport | None:
         """Package the compliance check the diagnostics pass already ran.

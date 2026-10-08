@@ -61,6 +61,20 @@ class MinVarianceOptimizer(BaseOptimizer):
         if w.value is None:
             raise RuntimeError(f"Solver failed: status={problem.status}")
         self._diagnostics.update(info.as_dict())
+        if not self.constraints.fully_invested:
+            # The open budget is honoured, not ignored — the pre-flight relies
+            # on this solve for the volatility floor of an open-budget mandate,
+            # where holding cash is how a low target is met. But the answer is
+            # then the smallest book the floors allow, which came back as
+            # weights near 1e-4 with nothing to say so.
+            invested = float(np.sum(w.value))
+            self._diagnostics["invested_fraction"] = invested
+            self._diagnostics["budget_note"] = (
+                f"With an open budget the lowest-variance book invests "
+                f"{invested:.2%} of capital — only what the weight floors "
+                "force. Set fully_invested=True for the minimum-variance "
+                "portfolio, or use mean_variance to trade return for risk."
+            )
         return w.value
 
 

@@ -274,6 +274,14 @@ not a trade) and a **tracking-error budget** (a risk statement, not a weights
 one). An audit that ran without a covariance matrix could not check the second
 at all, and comes back clean because it did not look.
 
+The audit does not check a return or volatility target, because a method that
+takes no target never imposed one. `ignored_constraints` says so instead: it
+names `target_return` or `target_volatility` whenever they are set on a method
+that does not take them (max-Sharpe, risk parity, the hierarchical and naive
+methods), and `fully_invested` when an open budget is ignored (max-Sharpe,
+max-diversification, risk parity). The pre-flight leaves such a target out, so
+it is never a fatal finding against a solve that does not read it.
+
 ## Infeasible mandates
 
 The difference between these four matters.

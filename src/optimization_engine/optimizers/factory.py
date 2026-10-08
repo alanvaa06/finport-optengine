@@ -65,7 +65,10 @@ def available_optimizers() -> list[str]:
 
 
 def constraints_from_config(
-    config: EngineConfig, assets: list[str] | None = None
+    config: EngineConfig,
+    assets: list[str] | None = None,
+    *,
+    keep_unsupported_targets: bool = False,
 ) -> PortfolioConstraints:
     """Translate an :class:`EngineConfig` into the optimizer's constraint object.
 
@@ -73,15 +76,32 @@ def constraints_from_config(
     including the exposure and turnover settings, which the engine documented
     but previously dropped on the floor between config and solver.
 
+    A return or volatility target the configured method does not take is left
+    out by default. This is what the pre-flight analyses (``run_engine``,
+    ``optengine check``, the MCP ``check`` tool and the app's panel) are handed,
+    and they used to validate a target the solve would ignore — so an
+    unreachable one was a fatal finding against a method that never reads it.
+
     Args:
         config: The configuration to translate.
         assets: The universe the solve will run over. Needed to expand a
             benchmark that is defined by rule rather than by vector (1/N is
             a different portfolio over a different universe); defaults to the
             assets the config itself names.
+        keep_unsupported_targets: Keep a target the method ignores. The
+            factory passes ``True``, so the optimizer sees it and records it in
+            ``extras["ignored_constraints"]``.
     """
     bounds = {k: tuple(v) for k, v in config.bounds.items()}
     group_bounds = {k: tuple(v) for k, v in config.group_bounds.items()}
+    target_return = config.optimizer.target_return
+    target_volatility = config.optimizer.target_volatility
+    req = REQUIREMENTS.get(config.optimizer.name.lower())
+    if req is not None and not keep_unsupported_targets:
+        if not req.supports_target_return:
+            target_return = None
+        if not req.supports_target_volatility:
+            target_volatility = None
     return PortfolioConstraints(
         constraint_layers=tuple(config.constraint_layers),
         benchmark_weights=config.benchmark_weight_map(assets),
@@ -93,8 +113,8 @@ def constraints_from_config(
         fully_invested=config.fully_invested,
         long_only=config.long_only,
         leverage=config.leverage,
-        target_return=config.optimizer.target_return,
-        target_volatility=config.optimizer.target_volatility,
+        target_return=target_return,
+        target_volatility=target_volatility,
         previous_weights=(
             dict(config.previous_weights) if config.previous_weights else None
         ),
@@ -367,7 +387,9 @@ def optimizer_factory(
     if expected_returns is None and config.expected_returns:
         expected_returns = pd.Series(config.expected_returns, name="expected_return")
 
-    constraints = constraints_from_config(config, list(cov_matrix.columns))
+    constraints = constraints_from_config(
+        config, list(cov_matrix.columns), keep_unsupported_targets=True
+    )
     _validate(
         spec,
         expected_returns,
