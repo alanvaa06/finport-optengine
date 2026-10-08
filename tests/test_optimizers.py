@@ -196,6 +196,95 @@ def test_inverse_vol_still_solves_a_healthy_panel(returns: pd.DataFrame):
     assert (weights > 0).all()
 
 
+def _indefinite_cov() -> pd.DataFrame:
+    """ρ(a,b) = ρ(b,c) = 0.9 with ρ(a,c) = −0.9: no joint distribution has these."""
+    names = ["a", "b", "c"]
+    corr = np.array([[1.0, 0.9, -0.9], [0.9, 1.0, 0.9], [-0.9, 0.9, 1.0]])
+    vol = np.array([0.10, 0.20, 0.15])
+    return pd.DataFrame(np.outer(vol, vol) * corr, index=names, columns=names)
+
+
+def test_an_indefinite_covariance_used_to_solve_to_a_negative_variance():
+    """The defect itself, pinned so the refusal below has a reason on record.
+
+    ``cp.psd_wrap`` tells CVXPY to trust the matrix rather than check it. On
+    this one the long-short minimum-variance solve came back ``optimal`` at
+    ``w = [1, −1, 1]``, where ``w'Σw = −0.0445`` — reported as zero volatility,
+    because the base class floors the variance at zero before rooting it.
+    """
+    from optimization_engine.optimizers.base import NonPSDCovarianceError
+    from optimization_engine.optimizers.mean_variance import MinVarianceOptimizer
+
+    cov = _indefinite_cov()
+    w = np.array([1.0, -1.0, 1.0])
+    assert float(w @ cov.values @ w) == pytest.approx(-0.0445)
+
+    from optimization_engine.optimizers.base import PortfolioConstraints
+
+    optimizer = MinVarianceOptimizer(
+        cov_matrix=cov,
+        constraints=PortfolioConstraints(
+            long_only=False, bounds={a: (-1.0, 1.0) for a in cov.index}
+        ),
+    )
+    with pytest.raises(NonPSDCovarianceError, match="eigenvalue") as raised:
+        optimizer.optimize()
+    assert raised.value.min_eigenvalue == pytest.approx(
+        float(np.linalg.eigvalsh(cov.values)[0])
+    )
+    assert "nearest_psd" in str(raised.value)
+
+
+@pytest.mark.parametrize("name", available_optimizers())
+def test_every_optimizer_refuses_an_indefinite_covariance(name: str):
+    """The check lives in ``BaseOptimizer.optimize``, so no method can skip it.
+
+    The engine's own estimators repair an indefinite estimate with
+    ``nearest_psd`` before any optimizer sees it, which is why only a caller of
+    the optimizers directly could hand one over. Repairing it again here would
+    solve a different matrix from the one passed, by an amount nobody chose;
+    refusing names the problem and the one-line repair.
+    """
+    from optimization_engine.optimizers.base import NonPSDCovarianceError
+    from optimization_engine.optimizers.factory import optimizer_factory
+
+    cov = _indefinite_cov()
+    rng = np.random.default_rng(0)
+    history = pd.DataFrame(
+        rng.normal(0.0004, 0.01, size=(300, 3)), columns=cov.columns
+    )
+    cfg = EngineConfig(
+        optimizer=OptimizerSpec(name=name),
+        benchmark_weights={a: 1 / 3 for a in cov.columns},
+    )
+    optimizer = optimizer_factory(
+        cfg,
+        cov,
+        expected_returns=pd.Series([0.05, 0.08, 0.06], index=cov.columns),
+        returns=history,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(NonPSDCovarianceError):
+            optimizer.optimize()
+
+
+def test_a_covariance_on_the_psd_boundary_still_solves(returns: pd.DataFrame):
+    """Eigenvalues at −1e-18 are rounding, not indefiniteness.
+
+    Fewer observations than assets make the sample covariance singular, and
+    the clipped estimate carries eigenvalues a few ulps either side of zero.
+    The check is relative to the matrix's own trace, so that is not refused.
+    """
+    from optimization_engine.optimizers.mean_variance import MinVarianceOptimizer
+
+    cov = covariance_matrix(returns.iloc[:8], method="sample")
+    assert len(cov) > 8
+    assert np.linalg.eigvalsh(cov.values)[0] < 1e-12
+    weights = MinVarianceOptimizer(cov_matrix=cov).optimize().weights
+    assert weights.sum() == pytest.approx(1.0, abs=1e-6)
+
+
 def test_cvar_extras_keys(returns: pd.DataFrame, baseline_config: EngineConfig):
     """``√ppy`` scaling is reported under a name that says what it is.
 

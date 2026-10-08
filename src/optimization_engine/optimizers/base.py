@@ -22,6 +22,72 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle: audit imports this module
 
 _LOG = logging.getLogger(__name__)
 
+#: How negative the smallest eigenvalue of a covariance may be, as a fraction
+#: of its trace, before the matrix is refused as indefinite. Estimates on the
+#: PSD boundary — singular, shrunk, detoned, or clipped by ``nearest_psd`` —
+#: carry eigenvalues a few ulps below zero, many orders inside this.
+PSD_RTOL = 1e-8
+
+
+class NonPSDCovarianceError(ValueError):
+    """The covariance handed to an optimizer has a materially negative eigenvalue.
+
+    Every solver call wraps the covariance in ``cp.psd_wrap``, which tells
+    CVXPY to trust it rather than check it. On an indefinite matrix that trust
+    buys a quadratic form that can go negative — a long-short minimum-variance
+    solve came back ``optimal`` at ``w'Σw = −0.0445`` — so the matrix is
+    refused before any method sees it.
+
+    Attributes:
+        min_eigenvalue: The smallest eigenvalue of the symmetrized matrix.
+        trace: Its trace, the scale the tolerance is measured against.
+    """
+
+    def __init__(self, min_eigenvalue: float, trace: float) -> None:
+        """Build the error from the eigenvalue that failed the check.
+
+        Args:
+            min_eigenvalue: The smallest eigenvalue found.
+            trace: The matrix's trace.
+        """
+        self.min_eigenvalue = float(min_eigenvalue)
+        self.trace = float(trace)
+        share = abs(self.min_eigenvalue) / self.trace if self.trace > 0 else float("inf")
+        super().__init__(
+            "The covariance matrix is not positive semi-definite: its smallest "
+            f"eigenvalue is {self.min_eigenvalue:.4g} ({share:.2%} of its "
+            "trace), so some portfolios would have negative variance and a "
+            "solve could report one as optimal. Repair it with "
+            "optimization_engine.nearest_psd — the eigenvalue clipping every "
+            "estimator in data.covariance already applies — or check how it "
+            "was built: pairwise-complete estimates and hand-edited "
+            "correlations are the usual causes."
+        )
+
+
+def check_covariance_psd(sigma: np.ndarray | None) -> None:
+    """Refuse a covariance whose smallest eigenvalue is materially negative.
+
+    Args:
+        sigma: The covariance, aligned to the solve's universe, or ``None``.
+            A matrix with non-finite entries is left to the checks that own
+            that failure, which name the asset rather than an eigenvalue.
+
+    Raises:
+        NonPSDCovarianceError: If the smallest eigenvalue is below
+            ``−PSD_RTOL · trace``.
+    """
+    if sigma is None:
+        return
+    values = np.asarray(sigma, dtype=float)
+    if values.size == 0 or not np.isfinite(values).all():
+        return
+    symmetric = (values + values.T) / 2.0
+    smallest = float(np.linalg.eigvalsh(symmetric)[0])
+    trace = float(np.trace(symmetric))
+    if smallest < -PSD_RTOL * max(abs(trace), np.finfo(float).tiny):
+        raise NonPSDCovarianceError(smallest, trace)
+
 
 @dataclass
 class PortfolioConstraints:
@@ -362,6 +428,9 @@ class BaseOptimizer(ABC):
             a violation within solver tolerance is acceptable.
 
         Raises:
+            NonPSDCovarianceError: If the covariance has a materially negative
+                eigenvalue. Checked before the solve, on the matrix as given —
+                ``BaseOptimizer._sigma_matrix``, not a subclass's posterior.
             RuntimeError: If the solve produced non-finite weights, which means
                 the problem is unbounded or numerically degenerate.
             SolverFailure: If no solver in the fallback chain returned a usable
@@ -372,6 +441,13 @@ class BaseOptimizer(ABC):
                 found a breach past tolerance.
         """
         from optimization_engine.optimizers._cvxpy_helpers import accepting_inaccurate
+
+        # Refused rather than repaired. The engine's estimators already pass
+        # every estimate through ``nearest_psd``, so only a direct caller can
+        # get here with an indefinite matrix — and repairing it silently would
+        # solve a different matrix from the one passed, by an amount nobody
+        # chose. The error names the repair instead.
+        check_covariance_psd(BaseOptimizer._sigma_matrix(self))
 
         # The scope covers ``_solve`` and nothing else. Every CVXPY solve this
         # method makes happens in there -- including the ones a sub-optimizer
