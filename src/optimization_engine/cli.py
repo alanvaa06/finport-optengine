@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import sys
 import traceback
 from collections.abc import Callable
@@ -11,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
+import yaml
 
 from optimization_engine.benchmark import BenchmarkError, BenchmarkSpec
 from optimization_engine.config import load_config
@@ -34,7 +36,11 @@ from optimization_engine.ingest import fields as ingest_fields
 from optimization_engine.optimizers._cvxpy_helpers import SolverFailure
 from optimization_engine.optimizers.factory import available_optimizers
 from optimization_engine.optimizers.requirements import requirements_for
-from optimization_engine.reporting.exporters import run_sheets, write_excel_report
+from optimization_engine.reporting.exporters import (
+    excel_writer,
+    run_sheets,
+    write_excel_report,
+)
 from optimization_engine.reporting.payloads import (
     SCHEMA_VERSION,
     backtest_payload,
@@ -81,7 +87,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override config.base_currency. Conversion uses FRED FX rates.",
     )
     _add_ingest_arguments(optimize)
-    optimize.add_argument("--output", default="outputs.xlsx", help="Output Excel path.")
+    optimize.add_argument(
+        "--output",
+        help="Excel path for the report. Defaults to outputs.xlsx in the "
+             "working directory, except under --json, where no workbook is "
+             "written unless this is given. An existing file is replaced, "
+             "and the run says so on stderr.",
+    )
     optimize.add_argument(
         "--accept-inaccurate",
         action="store_true",
@@ -473,8 +485,7 @@ def _load_stress_into(config, args: argparse.Namespace) -> int:
     try:
         config.stress = load_shocks(path)
     except (OSError, StressError) as exc:
-        print(f"Could not read stress scenarios from {path}: {exc}", file=sys.stderr)
-        return 2
+        return _fail(args, f"Could not read stress scenarios from {path}: {exc}")
     print(f"Loaded {len(config.stress)} stress scenario(s) from {path}")
     return 0
 
@@ -512,8 +523,7 @@ def _load_universe_for(args: argparse.Namespace, returns, prices):
         rules = load_universe_rules(path)
         universe = rules.build(returns=returns, prices=prices)
     except (OSError, UniverseError) as exc:
-        print(f"Could not read the universe from {path}: {exc}", file=sys.stderr)
-        return 2
+        return _fail(args, f"Could not read the universe from {path}: {exc}")
     print(rules.describe())
 
     policy = getattr(args, "universe_policy", "exclude")
@@ -561,13 +571,16 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
     for issue in quality.warnings:
         print(f"Data warning — {issue.describe()}", file=sys.stderr)
     if quality.errors and args.strict:
-        print(
+        return _fail(
+            args,
             "Refusing to optimize on data with errors. Drop --strict to "
             "proceed anyway.",
-            file=sys.stderr,
         )
-        return 2
 
+    # Every refusal below goes through `_fail` rather than a bare print, so
+    # the reason reaches the --json payload as well as stderr. Printed and
+    # returned, it left the payload saying only that the command "exited
+    # before producing a result".
     try:
         run = run_engine(
             returns,
@@ -578,37 +591,33 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
             run_stress=bool(config.stress),
         )
     except InfeasibleConstraintsError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
+        return _fail(args, str(exc))
     except StressError as exc:
-        print(f"Stress test failed: {exc}", file=sys.stderr)
-        return 2
+        return _fail(args, f"Stress test failed: {exc}")
     except MandateViolationError as exc:
         # Raised only under --strict-mandate, and *after* a successful solve:
         # the answer arrived and does not comply. It is a ValueError while
         # SolverFailure is a RuntimeError, so the clause below never sees it —
         # without this one the CLI would leak a traceback for the one failure
         # the flag exists to produce.
-        print(str(exc), file=sys.stderr)
-        print(
+        return _fail(
+            args,
+            f"{exc}\n"
             "  The mandate is satisfiable; this method did not satisfy it. "
             "Pick a method whose bounds are enforced inside the convex "
             "program, loosen the limit named above, or drop --strict-mandate "
             "and read the audit on the result.",
-            file=sys.stderr,
         )
-        return 2
     except SolverFailure as exc:
-        print(f"Optimization failed: {exc}", file=sys.stderr)
+        message = f"Optimization failed: {exc}"
         if config.max_tracking_error is not None or config.max_active_share is not None:
-            print(
-                "  A tracking-error or active-share budget is in force. A "
+            message += (
+                "\n  A tracking-error or active-share budget is in force. A "
                 "benchmark holding an asset your bounds cap below its index "
                 "weight sets a floor on tracking error that no allocation can "
-                "go below — raise the limit, or relax the bound.",
-                file=sys.stderr,
+                "go below — raise the limit, or relax the bound."
             )
-        return 2
+        return _fail(args, message)
 
     for warning in run.warnings:
         print(f"Warning — {warning}", file=sys.stderr)
@@ -662,15 +671,23 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
     _report_layer_exposures(run)
     performance = _report_versus_benchmark(run, config)
 
-    sheets = run_sheets(
-        run,
-        riskfree_rate=config.optimizer.risk_free_rate,
-        data_quality=quality,
-        walk_forward=walk_forward,
-        frontier_uncertainty=uncertainty,
-        performance=performance,
-    )
-    out = write_excel_report(args.output, sheets)
+    # Under --json the result is the document on stdout, so a workbook is
+    # written only when one is asked for; the human default stays, because
+    # a person running `optimize` expects a report to open.
+    output = args.output or (None if args.json else "outputs.xlsx")
+    out = None
+    sheets: dict = {}
+    if output is not None:
+        sheets = run_sheets(
+            run,
+            riskfree_rate=config.optimizer.risk_free_rate,
+            data_quality=quality,
+            walk_forward=walk_forward,
+            frontier_uncertainty=uncertainty,
+            performance=performance,
+        )
+        _announce_overwrite(output)
+        out = write_excel_report(output, sheets)
     if walk_forward is not None:
         comparison = run.in_vs_out_of_sample(
             walk_forward, config.optimizer.risk_free_rate
@@ -702,18 +719,33 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
                     f"    {name:<18} weight RMSE {row['weight_rmse']:.2%} · "
                     f"worst position {row['max_weight_drift']:.2%}"
                 )
-    print(f"Wrote {out} ({len(sheets)} sheets)")
+    if out is not None:
+        print(f"Wrote {out} ({len(sheets)} sheets)")
     _capture(
         args,
         optimization_payload(
             run,
-            output_path=str(out),
+            output_path=str(out) if out is not None else None,
             alignment=alignment,
             quality=quality,
             ingest=inputs.ingest,
+            data_source=inputs.data_source,
         ),
     )
     return 0
+
+
+def _announce_overwrite(path: str | Path) -> None:
+    """Say on stderr that a file is about to be replaced.
+
+    Replacing is still what happens — a re-run that refused to overwrite
+    its own last report would break the commonest workflow there is — but
+    not in silence: `optimize` used to replace an `outputs.xlsx` it had
+    never been asked to write, and the first anyone heard of it was the
+    missing workbook.
+    """
+    if Path(path).exists():
+        print(f"  Overwriting {path}.", file=sys.stderr)
 
 
 def _apply_benchmark_flags(
@@ -867,8 +899,7 @@ def _cmd_describe(args: argparse.Namespace) -> int:
     try:
         req = requirements_for(args.name)
     except KeyError as exc:
-        print(str(exc).strip("\""), file=sys.stderr)
-        return 2
+        return _fail(args, str(exc).strip("\""))
     print(f"{req.display_name}  ({req.name})")
     print(f"\n  {req.summary}")
     print(f"\nUse it when:\n  {req.when_to_use}")
@@ -1058,7 +1089,8 @@ def _load_prices_for(args: argparse.Namespace):
     """Resolve the price panel from whichever legacy flag names it.
 
     ``--provider`` is handled by :func:`_prepare_inputs`, which needs the
-    whole ingest result rather than the prices alone.
+    whole ingest result rather than the prices alone. Exactly one source has
+    been named by the time this runs — :func:`_data_source` checked.
     """
     if getattr(args, "yahoo", None):
         if args.yahoo_start:
@@ -1066,9 +1098,71 @@ def _load_prices_for(args: argparse.Namespace):
                 args.yahoo, start=args.yahoo_start, end=args.yahoo_end
             )
         return load_prices_yahoo(args.yahoo, period=args.yahoo_period)
-    if args.sample or not args.prices:
+    if args.sample:
         return sample_dataset()
     return load_prices(args.prices, sheet_name=args.sheet)
+
+
+def _split_identifiers(raw: str | None) -> list[str]:
+    return [token for token in str(raw or "").replace(",", " ").split() if token]
+
+
+def _data_source(args: argparse.Namespace) -> dict[str, object]:
+    """The one panel this run reads, described the way the payload reports it.
+
+    A source has to be named. ``--sample`` used to be what a command fell
+    back to when ``--prices`` was missing, so a forgotten flag produced an
+    exit-0 allocation on synthetic data with nothing on any stream saying
+    so. Naming two is refused for the same reason: ``--sample`` silently won
+    over ``--prices``, which is the same substitution reached the other way.
+
+    Raises:
+        ValueError: When the command line names no source, or more than one.
+            The message lists the flags.
+    """
+    named = [
+        flag
+        for flag, present in (
+            ("--prices", getattr(args, "prices", None)),
+            ("--provider", getattr(args, "provider", None)),
+            ("--yahoo", getattr(args, "yahoo", None)),
+            ("--sample", getattr(args, "sample", False)),
+        )
+        if present
+    ]
+    if not named:
+        raise ValueError(
+            "No price data given. Pass --prices FILE, --provider NAME with "
+            "--identifiers, --yahoo TICKERS, or --sample for the built-in "
+            "synthetic panel."
+        )
+    if len(named) > 1:
+        raise ValueError(
+            f"Pass one data source, not {len(named)}: {', '.join(named)}. "
+            "It would otherwise be ambiguous which panel the result describes."
+        )
+    source: dict[str, object] = {
+        "kind": {"--prices": "file", "--provider": "provider", "--yahoo": "yahoo",
+                 "--sample": "sample"}[named[0]],
+        "synthetic": False,
+        "path": None,
+        "provider": None,
+        "identifiers": None,
+    }
+    if named[0] == "--prices":
+        source["path"] = args.prices
+    elif named[0] == "--yahoo":
+        source["identifiers"] = _split_identifiers(args.yahoo)
+    elif named[0] == "--provider":
+        source["provider"] = args.provider
+        source["identifiers"] = _split_identifiers(getattr(args, "identifiers", None))
+        source["path"] = getattr(args, "file_path", None) if args.provider == "file" else None
+        # The ingest layer has a synthetic provider of its own; it is no more
+        # market data than --sample is.
+        source["synthetic"] = args.provider == "sample"
+    else:
+        source["synthetic"] = True
+    return source
 
 
 @dataclass
@@ -1083,6 +1177,8 @@ class _Inputs:
     #: One sentence per change alignment made to the panel. Empty means
     #: nothing was dropped, which is a claim worth being able to make.
     alignment: list[str]
+    #: Where the prices came from, as :func:`_data_source` describes it.
+    data_source: dict[str, object]
     #: The ingest the panel came from, for the payload's resolved window;
     #: ``None`` for ``--prices``, ``--sample`` and ``--yahoo``.
     ingest: object = None
@@ -1132,7 +1228,36 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
     """
     from optimization_engine.data.quality import align_panel, analyze_prices
 
-    config = load_config(args.config)
+    try:
+        data_source = _data_source(args)
+    except ValueError as exc:
+        return _fail(args, str(exc))
+    if data_source["synthetic"]:
+        # On stderr, like the alignment log: under --json it is the only
+        # stream a person reads, and the payload carries the same fact.
+        print(
+            "  Data: a synthetic panel — the numbers below describe no market.",
+            file=sys.stderr,
+        )
+
+    # Inside a handler, because a config that cannot be read is the most
+    # ordinary input error there is. Outside one, a missing file or a
+    # misspelt key escaped as a traceback with exit 1 — the code that means
+    # the engine ran and the answer is no — and under --json it fell into
+    # the net meant for defects. The exception's type stays in the message,
+    # which is how a caller tells a missing file from a malformed one.
+    try:
+        config = load_config(args.config)
+    except (yaml.YAMLError, json.JSONDecodeError) as exc:
+        return _fail(
+            args,
+            f"Could not load the config {args.config}: it is not valid YAML "
+            f"or JSON ({type(exc).__name__}: {exc})",
+        )
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        return _fail(
+            args, f"Could not load the config {args.config}: {type(exc).__name__}: {exc}"
+        )
     _apply_estimator_flags(config, args)
 
     volumes = None
@@ -1152,6 +1277,13 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
         return _fail(args, f"Yahoo Finance error: {exc}")
     except IngestError as exc:
         return _fail(args, f"Ingest error: {exc}")
+    except (OSError, ValueError) as exc:
+        # A price file that is missing, has an extension no reader takes, or
+        # whose index will not parse as dates: the same input error as a
+        # bad config, and the same exit code.
+        return _fail(
+            args, f"Could not load the price panel: {type(exc).__name__}: {exc}"
+        )
 
     if getattr(args, "base_currency", None):
         config.base_currency = args.base_currency.upper()
@@ -1273,6 +1405,7 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
         quality=quality,
         volumes=volumes,
         alignment=alignment,
+        data_source=data_source,
         ingest=ingested,
     )
 
@@ -1363,8 +1496,11 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
             name=Path(args.config).stem,
         )
     except SpecValidationError as exc:
-        print(f"{exc} Pass --initial-capital.", file=sys.stderr)
-        return 2
+        # The hint only for the one validation it answers: appended to every
+        # spec error, it told a caller with a negative --execution-lag to pass
+        # --initial-capital.
+        hint = " Pass --initial-capital." if "initial_capital" in str(exc) else ""
+        return _fail(args, f"{exc}{hint}")
     print(spec.describe())
     if spec.costs.uses_volume and volumes is None:
         print(
@@ -1411,11 +1547,9 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         # the message has to say which flag chose it: a run that stopped
         # because a warm-up period could not be evaluated has not found a
         # problem with the data.
-        print(f"Universe failed: {exc}", file=sys.stderr)
-        return 2
+        return _fail(args, f"Universe failed: {exc}")
     except ValueError as exc:
-        print(f"Walk-forward failed: {exc}", file=sys.stderr)
-        return 2
+        return _fail(args, f"Walk-forward failed: {exc}")
 
     print(f"  {walk.run.describe()}")
     print(f"  {walk.describe()}")
@@ -1469,8 +1603,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         # ``tearsheet`` applies ``config.stress`` to the book the walk-forward
         # ended on, so a shock naming an asset outside the panel surfaces here
         # rather than at the solve.
-        print(f"Stress test failed: {exc}", file=sys.stderr)
-        return 2
+        return _fail(args, f"Stress test failed: {exc}")
     print(f"  {sheet.tca.describe()}")
     if sheet.deflated_sharpe is not None:
         print(f"  {sheet.deflated_sharpe.describe()}")
@@ -1518,6 +1651,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         frames = sheet.to_frames()
         if sweep_results is not None:
             frames["sweep"] = sweep_results.frame
+        _announce_overwrite(args.output)
         out = write_excel_report(args.output, frames)
         print(f"Wrote {out} ({len(frames)} sheets)")
     _capture(
@@ -1529,6 +1663,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
             alignment=alignment,
             quality=inputs.quality,
             ingest=inputs.ingest,
+            data_source=inputs.data_source,
         ),
     )
     return 0
@@ -1632,7 +1767,12 @@ def _cmd_check(args: argparse.Namespace) -> int:
     _capture(
         args,
         check_payload(
-            quality, report, diag, alignment=alignment, ingest=inputs.ingest
+            quality,
+            report,
+            diag,
+            alignment=alignment,
+            ingest=inputs.ingest,
+            data_source=inputs.data_source,
         ),
     )
     if report.fatal_issues:
@@ -1734,7 +1874,10 @@ def _write_panel(path: Path, frame: pd.DataFrame) -> Path | None:
     if suffix == ".csv":
         frame.to_csv(path)
     elif suffix in {".xlsx", ".xls"}:
-        frame.to_excel(path, sheet_name="Precios")
+        # Through the shared writer: a provider's or a file's column names
+        # land in the header row, and must not be written as formulas.
+        with excel_writer(path) as writer:
+            frame.to_excel(writer, sheet_name="Precios")
     elif suffix == ".parquet":
         try:
             frame.to_parquet(path)
@@ -1759,7 +1902,8 @@ def _cmd_sample_data(args: argparse.Namespace) -> int:
     if out.suffix.lower() == ".csv":
         prices.to_csv(out)
     elif out.suffix.lower() in {".xlsx", ".xls"}:
-        prices.to_excel(out, sheet_name="Precios")
+        with excel_writer(out) as writer:
+            prices.to_excel(writer, sheet_name="Precios")
     elif out.suffix.lower() == ".parquet":
         prices.to_parquet(out)
     else:
@@ -1780,7 +1924,8 @@ def _cmd_fred(args: argparse.Namespace) -> int:
     if out.suffix.lower() == ".csv":
         df.to_csv(out)
     elif out.suffix.lower() in {".xlsx", ".xls"}:
-        df.to_excel(out)
+        with excel_writer(out) as writer:
+            df.to_excel(writer)
     elif out.suffix.lower() == ".parquet":
         df.to_parquet(out)
     else:
@@ -1853,6 +1998,27 @@ def _capture(args: argparse.Namespace, payload: dict[str, object]) -> None:
         sink["payload"] = payload
 
 
+def _escape_what_the_stream_cannot_encode() -> None:
+    """Write ``\\uXXXX`` for a character the output encoding lacks, not crash.
+
+    The narration uses a few characters outside the legacy Windows code
+    pages — α and δ in the method summaries, an arrow marking a binding
+    bucket. A console renders them, but a *piped* run on Windows encodes
+    with the ANSI code page (cp1252 on most Western machines), and there one
+    arrow raised ``UnicodeEncodeError`` half-way through the report: exit 1,
+    a traceback, and no workbook.
+
+    ``backslashreplace`` keeps the encoding the environment chose rather than
+    switching to UTF-8, so a consumer decoding with the code page still reads
+    every other character correctly. The ``--json`` document is unaffected
+    either way: ``json.dumps`` escapes non-ASCII itself.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="backslashreplace")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Parse the arguments and dispatch to the requested subcommand.
 
@@ -1861,11 +2027,13 @@ def main(argv: list[str] | None = None) -> int:
 
     Returns:
         A process exit code. ``0`` on success; ``1`` when the command ran and
-        the answer is negative — an infeasible mandate from ``check``, an
-        incomplete panel from ``ingest``, or, under ``--json``, a command that
-        raised; ``2`` when the command could not run at all. See
-        ``docs/ERRORS.md`` for the full contract.
+        the answer is negative — unusable data from ``check``, an incomplete
+        panel from ``ingest``, or, under ``--json``, a command that raised;
+        ``2`` when the command could not run at all, which includes a config
+        or price file that cannot be read and a mandate ``check`` finds
+        impossible. See ``docs/ERRORS.md`` for the full contract.
     """
+    _escape_what_the_stream_cannot_encode()
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.command == "optimize":

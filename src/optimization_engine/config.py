@@ -540,12 +540,15 @@ def stated_keys(path: str | Path) -> frozenset[str]:
 
 def _read_mapping(path: str | Path) -> dict[str, Any]:
     p = Path(path)
+    # The extension first: reading before checking it loaded any file the
+    # path named — a key, a multi-gigabyte dump — only to refuse it.
+    suffix = p.suffix.lower()
+    if suffix not in {".yaml", ".yml", ".json"}:
+        raise ValueError(f"Unsupported config extension: {p.suffix}")
     text = p.read_text(encoding="utf-8")
-    if p.suffix.lower() in {".yaml", ".yml"}:
-        return yaml.safe_load(text) or {}
-    if p.suffix.lower() == ".json":
+    if suffix == ".json":
         return json.loads(text)
-    raise ValueError(f"Unsupported config extension: {p.suffix}")
+    return yaml.safe_load(text) or {}
 
 
 def save_config(config: EngineConfig, path: str | Path) -> None:

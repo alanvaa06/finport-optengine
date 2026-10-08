@@ -57,7 +57,7 @@ _LOG = logging.getLogger(__name__)
 
 _USER_AGENT = (
     "optimization-engine/0.3 "
-    "(+https://github.com/alanvaa06/Optimization_Engine)"
+    "(+https://github.com/alanvaa06/finport-optengine)"
 )
 
 #: Statuses worth trying again: the server is overloaded, throttling, or a

@@ -405,11 +405,14 @@ stderr, and turned into a code:
 | Code | Meaning |
 | --- | --- |
 | `0` | Success |
-| `1` | The command ran and the answer is "no" — `check` found the mandate infeasible or the data unusable, `ingest` completed but the panel is incomplete |
-| `2` | The command could not run — bad config, unresolvable benchmark, data error under `--strict`, infeasible constraints, solver failure, provider error |
+| `1` | The command ran and the answer is "no" — `check` found the data unusable, `ingest` completed but the panel is incomplete |
+| `2` | The command could not run, or the mandate cannot — no data source named (or more than one), a missing, unreadable or malformed config or price file, unresolvable benchmark, data error under `--strict`, infeasible constraints (including `check` finding the mandate impossible), solver failure, provider error |
 
 The distinction is worth honouring in a script: `1` means the engine worked and
-is telling you something, `2` means it never got that far.
+is telling you something about the data, `2` means it never got as far as an
+allocation. `check` puts an impossible mandate under `2` on purpose: it is the
+same finding `optimize --strict` stops on, and a script should not have to
+handle it differently depending on which command found it.
 
 `--json` keeps those codes for anything the command *returns*, with one
 addition: an exception that escapes a command is caught, its traceback printed
@@ -424,12 +427,15 @@ result still emits one:
 ```json
 {
   "schema_version": "...",
-  "command": "optimize",
-  "error": "SpecValidationError: execution_lag cannot be negative; got -1.",
-  "exit_code": 1
+  "command": "backtest",
+  "error": "execution_lag cannot be negative; got -1. A negative lag would trade on a decision not yet taken.",
+  "exit_code": 2
 }
 ```
 
+`error` carries the same reason the command printed to stderr — the
+infeasible constraint, the solver that gave up, the breached limit, the
+unknown method name — whether the command returned its code or raised.
 A caller parsing stdout never has to tell "no JSON" apart from "JSON I could
 not read". Note that a run which raised reports the failure *even if it had
 already captured a payload*: emitting that payload under a non-zero exit would

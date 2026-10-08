@@ -44,7 +44,7 @@ PACKAGE = "optimization_engine"
 #: Source links on every documented object. pdoc renders these as "View Source"
 #: anchors, which is the difference between a reference you read and one you
 #: can check.
-EDIT_URL = "https://github.com/alanvaa06/optimization_engine/blob/main/src/optimization_engine/"
+EDIT_URL = "https://github.com/alanvaa06/finport-optengine/blob/main/src/optimization_engine/"
 
 
 def _is_private(module: str) -> bool:

@@ -11,23 +11,54 @@ serialisation layer that could drift from the first.
 
 **What this server can reach.** It runs as a local process with the
 permissions of whoever launched it, and two tools take a filesystem path —
-``config_path`` for a mandate and ``prices_path`` for a price panel. They
-read those files. Nothing here writes to disk, fetches over the network, or
-reaches a data provider that needs a key; a caller that wants live data
-should ingest it separately and hand over a file. Start from ``sample=True``,
-which needs no paths at all.
+``config_path`` for a mandate and ``prices_path`` for a price panel. The
+caller is a model, and a model can be steered by text it read somewhere
+else, so those paths are confined:
+
+- only under the *allowed roots* — ``--root DIR`` (repeatable) on the
+  command line, else ``OPTENGINE_MCP_ROOTS`` (directories separated by
+  ``os.pathsep``), else the working directory the server started in. A
+  server started from a filesystem root gets no implicit root at all, since
+  that default would be the whole disk. A relative path resolves against the
+  first root, and a symlink or ``..`` that leads outside is refused;
+- never a network or device path (``\\\\host\\share``, ``//host/share``,
+  ``\\\\?\\…``) — on Windows merely looking one up authenticates to that host
+  over SMB with the user's credentials;
+- only with the extensions a mandate (``.yaml``, ``.yml``, ``.json``) or a
+  price panel (``.csv``, ``.xlsx``, ``.xls``, ``.xlsm``, ``.parquet``) has,
+  and under :data:`MAX_CONFIG_BYTES` / :data:`MAX_PRICES_BYTES` — both checked
+  before a byte is read.
+
+A file that does not parse is reported by path and kind of problem — the
+exception type, and a line and column where the parser gives one — never by
+the parser's message, which quotes the file: a YAML snippet, a value that
+would not convert, the first cell of a CSV. Nothing here writes to disk,
+fetches over the network, or reaches a data provider that needs a key; a
+caller that wants live data should ingest it separately and hand over a
+file. Start from ``sample=True``, which needs no paths at all.
 
 **Solving blocks.** A large mean-variance solve is seconds of CPU, and these
 tools are synchronous, so a client waiting on one waits for the whole thing.
-That is the honest behaviour for an optimizer; it is not a hung server.
+That is the honest behaviour for an optimizer; it is not a hung server. What
+*is* bounded is how much work one call may ask for: a panel of at most
+:data:`MAX_ASSETS` assets and :data:`MAX_ROWS` rows, and a backtest of at most
+:data:`MAX_RESOLVES` re-solves. The CLI has none of these limits.
 """
 
 from __future__ import annotations
 
+import argparse
+import functools
+import json
+import math
+import os
+from collections.abc import Callable
 from dataclasses import replace
-from typing import Any
+from pathlib import Path
+from typing import Annotated, Any, TypeVar
 
 import pandas as pd
+import yaml
 
 from optimization_engine._optional import require
 from optimization_engine.reporting.payloads import (
@@ -57,7 +88,8 @@ table and is not.
 
 Data: pass `sample=True` for a built-in synthetic panel, or `prices_path`
 for a CSV, Excel or Parquet file of prices (not returns — the engine
-differences them).
+differences them). Paths must lie under the directories this server was
+started with — its working directory unless it was told otherwise.
 """
 
 
@@ -98,6 +130,186 @@ def _build() -> tuple[Any, type[Exception]]:
 
 
 mcp, ToolError = _build()
+
+#: pydantic ships with the SDK. Taken through ``require`` rather than imported
+#: at the top, so a core install still gets the install command from
+#: ``_build`` instead of a bare ImportError naming a package it never asked for.
+Field = require("pydantic", extra="mcp", purpose="running the MCP server").Field
+
+#: Environment variable naming the directories the path-taking tools may read,
+#: separated by ``os.pathsep``. ``--root`` on the command line takes precedence.
+ROOTS_ENV = "OPTENGINE_MCP_ROOTS"
+
+#: Largest mandate file read, in bytes. A real one is a few kilobytes.
+MAX_CONFIG_BYTES = 1024 * 1024
+#: Largest price file read, in bytes — twenty years of daily closes for a few
+#: hundred assets fits with room to spare.
+MAX_PRICES_BYTES = 64 * 1024 * 1024
+#: Widest panel one call may solve on.
+MAX_ASSETS = 200
+#: Longest panel one call may solve on — about forty years of daily bars.
+MAX_ROWS = 10_000
+#: Most re-solves one ``backtest`` call may ask for. A re-solve on every bar of
+#: the sample panel is ~1,500 solves, and the server answers nothing else while
+#: it runs; 250 is a weekly cadence over five years of daily data.
+MAX_RESOLVES = 250
+
+CONFIG_SUFFIXES = (".yaml", ".yml", ".json")
+PRICE_SUFFIXES = (".csv", ".xlsx", ".xls", ".xlsm", ".parquet")
+
+#: Set by ``--root`` in :func:`main`; ``None`` defers to the environment.
+_command_line_roots: tuple[Path, ...] | None = None
+
+
+def allowed_roots() -> tuple[Path, ...]:
+    """The directories the path-taking tools may read, resolved.
+
+    ``--root`` first, then :data:`ROOTS_ENV`, then the working directory —
+    unless the working directory is a filesystem root, where the default would
+    be the whole disk and there is none.
+
+    Returns:
+        The roots, possibly empty. Empty means no path is readable until the
+        server is told where.
+    """
+    if _command_line_roots is not None:
+        return _command_line_roots
+    configured = os.environ.get(ROOTS_ENV, "")
+    if configured.strip():
+        return tuple(
+            Path(entry).expanduser().resolve()
+            for entry in configured.split(os.pathsep)
+            if entry.strip()
+        )
+    cwd = Path.cwd().resolve()
+    return () if cwd == Path(cwd.anchor) else (cwd,)
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    # normcase so that C:\Data and c:\data are one directory on Windows, and
+    # stay two on a case-sensitive filesystem.
+    return Path(os.path.normcase(path)).is_relative_to(Path(os.path.normcase(root)))
+
+
+def _readable(raw: str, *, what: str, suffixes: tuple[str, ...], limit: int) -> Path:
+    """Resolve a caller's path, or refuse it before anything is read.
+
+    The checks run cheapest and least revealing first: the shape of the string,
+    then its extension, then where it resolves, and only then the filesystem.
+
+    Args:
+        raw: The path as the caller sent it.
+        what: ``"config"`` or ``"price"``, for the messages.
+        suffixes: The extensions a file of this kind may have.
+        limit: The largest size accepted, in bytes.
+
+    Returns:
+        The resolved path, inside an allowed root, of a regular file within
+        ``limit``.
+
+    Raises:
+        ToolError: Naming the path and which check it failed.
+    """
+    if raw.startswith(("\\\\", "//")):
+        raise ToolError(
+            f"{raw} is a network or device path; this server reads local files only."
+        )
+    suffix = Path(raw).suffix.lower()
+    if suffix not in suffixes:
+        raise ToolError(
+            f"{raw}: a {what} file must end in {', '.join(suffixes)}; "
+            f"got {suffix or 'no extension'}."
+        )
+    roots = allowed_roots()
+    if not roots:
+        raise ToolError(
+            "This server was started from a filesystem root, so it reads no files "
+            f"until told where: start it with --root DIR, or set {ROOTS_ENV}."
+        )
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        candidate = roots[0] / candidate
+    resolved = candidate.resolve()
+    if not any(_is_within(resolved, root) for root in roots):
+        raise ToolError(
+            f"{raw} is outside the directories this server may read "
+            f"({', '.join(str(r) for r in roots)}). Start it with --root DIR, or "
+            f"set {ROOTS_ENV}, to allow another."
+        )
+    if not resolved.exists():
+        raise ToolError(f"No such {what} file: {raw}")
+    if not resolved.is_file():
+        raise ToolError(f"{raw} is not a regular file.")
+    size = resolved.stat().st_size
+    if size > limit:
+        raise ToolError(
+            f"{raw} is {size:,} bytes; this server reads {what} files of up to "
+            f"{limit:,} bytes."
+        )
+    return resolved
+
+
+def _withheld(path: str, what: str, exc: BaseException) -> str:
+    """Say a file could not be used, without quoting what is in it.
+
+    A parser's message quotes its input — a YAML snippet, a value float() would
+    not take, the first cell of a CSV — and a path-taking tool can be pointed at
+    any file under its roots. The type and, where the parser gives one, the
+    position are enough to find the problem in a file you own.
+    """
+    where = ""
+    mark = getattr(exc, "problem_mark", None)
+    if isinstance(exc, yaml.MarkedYAMLError) and mark is not None:
+        where = f" at line {mark.line + 1}, column {mark.column + 1}"
+    elif isinstance(exc, json.JSONDecodeError):
+        where = f" at line {exc.lineno}, column {exc.colno}"
+    return (
+        f"Could not read {path} as {what}: {type(exc).__name__}{where}. The "
+        "parser's message is withheld because it can quote the file; run "
+        "`optengine check` on it locally to see it."
+    )
+
+
+def _check_size(prices: pd.DataFrame) -> None:
+    """Refuse a panel larger than one call should solve on."""
+    rows, assets = prices.shape
+    if assets > MAX_ASSETS or rows > MAX_ROWS:
+        raise ToolError(
+            f"The panel has {assets} assets and {rows} rows; this server solves "
+            f"on at most {MAX_ASSETS} assets and {MAX_ROWS} rows per call. Use "
+            "the optengine CLI, which has no such limit, for a larger one."
+        )
+
+
+_Tool = TypeVar("_Tool", bound=Callable[..., Any])
+
+
+def _reasons_reach_the_client(tool: _Tool) -> _Tool:
+    """Re-raise the engine's own refusals as ``ToolError``, reason intact.
+
+    Anything else that escapes a tool is wrapped by the SDK as "Error executing
+    tool X" with the reason discarded. The engine's refusals are ``ValueError``
+    and ``RuntimeError`` subclasses — a shock outside the panel, an invalid
+    backtest spec, a singular covariance — plus the ``KeyError`` for an
+    unknown name, and all of them say what to change. By the time one is raised
+    the mandate and the panel have been read and validated, so the message
+    describes them rather than the bytes of an arbitrary file; read failures
+    are reported, withheld, before this point.
+    """
+
+    @functools.wraps(tool)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return tool(*args, **kwargs)
+        except ToolError:
+            raise
+        except KeyError as exc:
+            reason = exc.args[0] if exc.args else exc
+            raise ToolError(f"KeyError: {reason}") from exc
+        except (ValueError, RuntimeError) as exc:
+            raise ToolError(f"{type(exc).__name__}: {exc}") from exc
+
+    return wrapper  # type: ignore[return-value]
 
 
 def _panel(
@@ -144,19 +356,31 @@ def _panel(
     if sample:
         prices = sample_dataset()
     elif prices_path:
+        path = _readable(
+            prices_path, what="price", suffixes=PRICE_SUFFIXES, limit=MAX_PRICES_BYTES
+        )
         try:
-            prices = load_prices(prices_path)
-        except FileNotFoundError as exc:
-            raise ToolError(f"No such price file: {prices_path}") from exc
-        except Exception as exc:  # unreadable, wrong shape, unsupported suffix
+            prices = load_prices(path)
+        except Exception as exc:  # noqa: BLE001 — every reader failure, reported without its text
+            raise ToolError(_withheld(prices_path, "a price panel", exc)) from exc
+        text_columns = [
+            str(position)
+            for position, column in enumerate(prices.columns, start=1)
+            if not pd.api.types.is_numeric_dtype(prices[column])
+        ]
+        if text_columns:
+            # By position, not by name or value: the header and the cells of a
+            # file that is not a price panel are exactly what must not echo.
             raise ToolError(
-                f"Could not read {prices_path} as a price panel: {exc}"
-            ) from exc
+                f"{prices_path}: column(s) {', '.join(text_columns)} after the "
+                "date column are not numeric; a price panel holds numbers only."
+            )
     else:
         raise ToolError(
             "No data given. Pass sample=True for the built-in panel, or "
             "prices_path pointing at a CSV, Excel or Parquet file of prices."
         )
+    _check_size(prices)
     quality = None
     if config is not None:
         _annualize(config, config_path, prices.index)
@@ -187,8 +411,14 @@ def _annualize(config: Any, config_path: str | None, index: pd.Index) -> None:
     )
 
     stated = None
-    if config_path and "periods_per_year" in stated_keys(config_path):
-        stated = config.periods_per_year
+    if config_path:
+        # The same confined, already-validated file ``_config`` read — never
+        # the raw argument, which may be relative to a root, not to the cwd.
+        path = _readable(
+            config_path, what="config", suffixes=CONFIG_SUFFIXES, limit=MAX_CONFIG_BYTES
+        )
+        if "periods_per_year" in stated_keys(path):
+            stated = config.periods_per_year
     try:
         config.periods_per_year, _ = resolve_periods_per_year(
             index, stated=stated, default=config.periods_per_year
@@ -198,22 +428,40 @@ def _annualize(config: Any, config_path: str | None, index: pd.Index) -> None:
 
 
 def _config(config_path: str | None, optimizer: str | None) -> Any:
-    """Load a mandate, or build the smallest one that will solve."""
-    from optimization_engine.config import EngineConfig, OptimizerSpec, load_config
+    """Load a mandate, or build the smallest one that will solve.
 
+    The method name is checked here, for all three tools at once: unchecked,
+    an unknown name surfaced as a ``KeyError`` deep in the solve, which the
+    SDK reported as "Error executing tool optimize" and nothing more.
+    """
+    from optimization_engine.config import EngineConfig, OptimizerSpec, load_config
+    from optimization_engine.optimizers.factory import available_optimizers
+
+    if optimizer and optimizer not in available_optimizers():
+        raise ToolError(
+            f"No optimizer named {optimizer!r}. Available: "
+            + ", ".join(available_optimizers())
+        )
     if config_path:
+        path = _readable(
+            config_path, what="config", suffixes=CONFIG_SUFFIXES, limit=MAX_CONFIG_BYTES
+        )
         try:
-            config = load_config(config_path)
-        except FileNotFoundError as exc:
-            raise ToolError(f"No such config file: {config_path}") from exc
-        except Exception as exc:
-            raise ToolError(f"Could not read {config_path}: {exc}") from exc
+            config = load_config(path)
+        except Exception as exc:  # noqa: BLE001 — every parse failure, reported without its text
+            raise ToolError(_withheld(config_path, "a mandate", exc)) from exc
         if optimizer:
             # Swap the method, keep the rest: the risk-free rate, the return
             # target, the risk budget and the views are part of the mandate.
             # Replacing the whole spec silently solved max-Sharpe against a
             # cash rate of zero on a config that said 4%.
             config.optimizer = replace(config.optimizer, name=optimizer)
+        elif config.optimizer.name not in available_optimizers():
+            # The name came from the file, so it is not repeated back.
+            raise ToolError(
+                f"{config_path} names an optimizer this engine does not have. "
+                "Available: " + ", ".join(available_optimizers())
+            )
         return config
     return EngineConfig(optimizer=OptimizerSpec(name=optimizer or "risk_parity"))
 
@@ -286,6 +534,7 @@ def describe_optimizer(name: str) -> dict[str, Any]:
         "well enough to be worth optimizing on."
     ),
 )
+@_reasons_reach_the_client
 def check_mandate(
     config_path: str | None = None,
     sample: bool = False,
@@ -345,6 +594,7 @@ def check_mandate(
         "rather than capital. Blocks while solving."
     ),
 )
+@_reasons_reach_the_client
 def optimize(
     config_path: str | None = None,
     sample: bool = False,
@@ -399,15 +649,16 @@ def optimize(
         "told apart from a real change. Blocks while running."
     ),
 )
+@_reasons_reach_the_client
 def backtest(
     config_path: str | None = None,
     sample: bool = False,
     prices_path: str | None = None,
     optimizer: str | None = None,
-    lookback: int | None = None,
-    rebalance_every: int | None = None,
-    commission_bps: float = 5.0,
-    slippage_bps: float = 5.0,
+    lookback: Annotated[int | None, Field(ge=2, le=MAX_ROWS)] = None,
+    rebalance_every: Annotated[int | None, Field(ge=1)] = None,
+    commission_bps: Annotated[float, Field(ge=0.0, le=10_000.0)] = 5.0,
+    slippage_bps: Annotated[float, Field(ge=0.0, le=10_000.0)] = 5.0,
 ) -> dict[str, Any]:
     """Simulate the process, rather than replaying a fitted allocation.
 
@@ -421,12 +672,16 @@ def backtest(
         sample: Use the built-in synthetic price panel.
         prices_path: A CSV, Excel or Parquet file of prices.
         optimizer: Override the config's method.
-        lookback: Estimation window, in periods. Defaults to two years on
-            the config's ``periods_per_year``.
-        rebalance_every: Periods between re-solves. Defaults to one quarter.
+        lookback: Estimation window, in periods, at least 2. Defaults to
+            two years on the config's ``periods_per_year``.
+        rebalance_every: Periods between re-solves, at least 1. Defaults
+            to one quarter. Zero used to be read as "the default" and
+            run without a word; the schema now refuses it. The walk may
+            ask for at most :data:`MAX_RESOLVES` re-solves in all.
         commission_bps: Broker commission, in basis points of traded value,
-            per side.
+            per side. Not negative.
         slippage_bps: Slippage, in basis points of traded value, per side.
+            Not negative.
 
     Returns:
         ``spec_hash`` and ``result_hash`` identify the run; ``degradations``
@@ -440,6 +695,21 @@ def backtest(
 
     config = _config(config_path, optimizer)
     _, returns, alignment, quality = _panel(sample, prices_path, config, config_path)
+    # Counted before the walk starts, on the walk's own defaults: the cost of
+    # a call is roughly one solve per re-solve, and a server busy with one
+    # call answers no other.
+    ppy = config.periods_per_year
+    window = lookback or max(2 * ppy, 24)
+    cadence = rebalance_every or max(ppy // 4, 1)
+    resolves = math.ceil(max(len(returns) - window, 0) / cadence)
+    if resolves > MAX_RESOLVES:
+        raise ToolError(
+            f"This walk-forward would make {resolves} re-solves; this server "
+            f"runs at most {MAX_RESOLVES} per call. Raise rebalance_every to "
+            f"at least {math.ceil(max(len(returns) - window, 0) / MAX_RESOLVES)}, "
+            "shorten the panel, or use `optengine backtest`, which has no such "
+            "limit."
+        )
     spec = BacktestSpec(
         costs=CostSpec(commission_bps=commission_bps, slippage_bps=slippage_bps),
         periods_per_year=config.periods_per_year,
@@ -467,8 +737,33 @@ def backtest(
     )
 
 
-def main() -> None:
-    """Console-script entry point: serve over stdio."""
+def main(argv: list[str] | None = None) -> None:
+    """Console-script entry point: serve over stdio.
+
+    Args:
+        argv: Arguments to parse, defaulting to ``sys.argv[1:]``. ``--root
+            DIR``, repeatable, names a directory the path-taking tools may
+            read and replaces the default of the working directory.
+    """
+    global _command_line_roots
+
+    parser = argparse.ArgumentParser(
+        prog="optengine-mcp",
+        description="Serve the optimization engine as MCP tools over stdio.",
+    )
+    parser.add_argument(
+        "--root",
+        action="append",
+        metavar="DIR",
+        help=(
+            "A directory config_path and prices_path may point into. Repeat "
+            f"for several. Overrides {ROOTS_ENV} and the default, which is the "
+            "working directory the server started in."
+        ),
+    )
+    args = parser.parse_args(argv)
+    if args.root:
+        _command_line_roots = tuple(Path(r).expanduser().resolve() for r in args.root)
     mcp.run(transport="stdio")
 
 

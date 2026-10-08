@@ -621,9 +621,11 @@ providers, with per-identifier provenance), the stateless backtest core with
 its cost model and trial counting, the walk-forward and final-holdout audit
 path, and the constraint-layer editor in the Streamlit app.
 
-[Unreleased]: https://github.com/alanvaa06/optimization_engine/compare/v0.5.2...HEAD
-[0.5.2]: https://github.com/alanvaa06/optimization_engine/compare/v0.5.1...v0.5.2
-[0.5.1]: https://github.com/alanvaa06/optimization_engine/compare/v0.5.0...v0.5.1
-[0.5.0]: https://github.com/alanvaa06/optimization_engine/compare/v0.4.1...v0.5.0
-[0.4.1]: https://github.com/alanvaa06/optimization_engine/compare/v0.4.0...v0.4.1
-[0.4.0]: https://github.com/alanvaa06/optimization_engine/releases/tag/v0.4.0
+[Unreleased]: https://github.com/alanvaa06/finport-optengine/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/alanvaa06/finport-optengine/compare/v0.5.3...v0.7.0
+[0.5.3]: https://github.com/alanvaa06/finport-optengine/compare/v0.5.2...v0.5.3
+[0.5.2]: https://github.com/alanvaa06/finport-optengine/compare/v0.5.1...v0.5.2
+[0.5.1]: https://github.com/alanvaa06/finport-optengine/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/alanvaa06/finport-optengine/compare/v0.4.1...v0.5.0
+[0.4.1]: https://github.com/alanvaa06/finport-optengine/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/alanvaa06/finport-optengine/releases/tag/v0.4.0
