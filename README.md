@@ -13,16 +13,15 @@ the book is in risk rather than capital, how much of the backtest survives out
 of sample, and how much of *that* survives the number of configurations you
 tried before settling on this one.
 
-> **New in 0.5.0 — the engine answers to agents as well as to people.**
-> There is an [MCP server](#mcp-server) exposing five tools, `--json` on
-> `optimize`, `backtest`, `check` and `describe`, and an
-> [`AGENTS.md`](https://github.com/alanvaa06/Optimization_Engine/blob/main/AGENTS.md)
-> written as an API map for coding agents. No optimizer or estimator changed
-> behaviour; one pre-flight bug did — `check` was validating a different
-> mandate from the one `optimize` went on to solve. Details in the
-> [release notes](https://github.com/alanvaa06/Optimization_Engine/releases/tag/v0.5.0)
-> and the
-> [changelog](https://github.com/alanvaa06/Optimization_Engine/blob/main/CHANGELOG.md).
+> **New in 0.7.0 — numerical rigor, honest failures, and a pre-trade layer.**
+> Some defaults changed, and numbers move with them: a solve that only
+> reaches `optimal_inaccurate` now raises unless you accept it, a target
+> return below the minimum-variance return is a floor rather than an
+> equality, and the headline Sharpe ratio and the historical mean are
+> arithmetic. Added: a point-in-time universe layer, shock-based stress
+> scenarios, a post-solve mandate audit, and Stress and Universe tabs in the
+> app. What changed and what to do about it is in the
+> [changelog](https://github.com/alanvaa06/finport-optengine/blob/main/CHANGELOG.md).
 
 ```bash
 pip install finport-optengine
@@ -81,7 +80,7 @@ whichever way you install it. The core is numpy, pandas, scipy, cvxpy and
 scikit-learn; plotting, Excel and regression live behind
 [extras](#install).
 
-![The Optimize tab: compliance banner, concentration diagnostics, allocation and risk decomposition](https://raw.githubusercontent.com/alanvaa06/Optimization_Engine/main/docs/images/app-optimize.png)
+![The Optimize tab: compliance banner, concentration diagnostics, allocation and risk decomposition](https://raw.githubusercontent.com/alanvaa06/finport-optengine/main/docs/images/app-optimize.png)
 
 ## The five questions it answers
 
@@ -94,7 +93,7 @@ allocation actually landed. The sweep range comes from what the constraints
 can reach, so a binding position cap shortens the curve instead of silently
 failing half of it.
 
-![Efficient frontier with minimum-variance, tangency, capital allocation line and the selected portfolio marked](https://raw.githubusercontent.com/alanvaa06/Optimization_Engine/main/docs/images/frontier.png)
+![Efficient frontier with minimum-variance, tangency, capital allocation line and the selected portfolio marked](https://raw.githubusercontent.com/alanvaa06/finport-optengine/main/docs/images/frontier.png)
 
 ### 2. How much of that curve is real?
 
@@ -105,7 +104,7 @@ Differences narrower than that band are not distinguishable from estimation
 noise, which is a useful thing to know before defending a 20bp allocation
 difference in a meeting.
 
-![The same frontier resampled 60 times, drawn as a confidence band around the point estimate](https://raw.githubusercontent.com/alanvaa06/Optimization_Engine/main/docs/images/frontier-uncertainty.png)
+![The same frontier resampled 60 times, drawn as a confidence band around the point estimate](https://raw.githubusercontent.com/alanvaa06/finport-optengine/main/docs/images/frontier-uncertainty.png)
 
 ### 3. Where is the risk, as opposed to the money?
 
@@ -114,7 +113,7 @@ happy to let them diverge. Here a 26% position in EM equity carries **71% of
 the portfolio's risk** — the gap between the two bars is the entire argument
 for risk budgeting, and it is invisible in a weights table.
 
-![Capital weight beside share of risk per asset, showing a 26% position carrying 71% of risk](https://raw.githubusercontent.com/alanvaa06/Optimization_Engine/main/docs/images/capital-vs-risk.png)
+![Capital weight beside share of risk per asset, showing a 26% position carrying 71% of risk](https://raw.githubusercontent.com/alanvaa06/finport-optengine/main/docs/images/capital-vs-risk.png)
 
 ### 4. Would any of this have worked?
 
@@ -126,7 +125,7 @@ cadence and the same 15bps of trading cost on both lines, so the gap is
 overfitting rather than a cost artefact: **Sharpe 0.87 fitted against 0.43
 walk-forward.**
 
-![In-sample and out-of-sample wealth curves diverging over time](https://raw.githubusercontent.com/alanvaa06/Optimization_Engine/main/docs/images/walk-forward.png)
+![In-sample and out-of-sample wealth curves diverging over time](https://raw.githubusercontent.com/alanvaa06/finport-optengine/main/docs/images/walk-forward.png)
 
 ### 5. Is any of that real, or did you try forty things and report the best?
 
@@ -379,7 +378,7 @@ with the sample. The shaded bands are relative drawdown: the stretches during
 which the portfolio was behind the index it is measured on, which is what a
 client remembers and what no absolute chart shows.
 
-![Portfolio wealth divided by benchmark wealth, with the periods spent behind the index shaded](https://raw.githubusercontent.com/alanvaa06/Optimization_Engine/main/docs/images/relative-performance.png)
+![Portfolio wealth divided by benchmark wealth, with the periods spent behind the index shaded](https://raw.githubusercontent.com/alanvaa06/finport-optengine/main/docs/images/relative-performance.png)
 
 Annualized figures hide the shape of a record, so the same report tabulates it
 period by period. Here the portfolio beat the index in seven of the nine
@@ -387,7 +386,7 @@ calendar periods, and the two it lost were the first two — a shape that a
 single information ratio summarises away, and that decides whether anyone is
 still invested by the third year.
 
-![Calendar-year returns for the portfolio and its benchmark, with the excess marked](https://raw.githubusercontent.com/alanvaa06/Optimization_Engine/main/docs/images/period-returns.png)
+![Calendar-year returns for the portfolio and its benchmark, with the excess marked](https://raw.githubusercontent.com/alanvaa06/finport-optengine/main/docs/images/period-returns.png)
 
 `active_mean_variance` goes further and optimizes in active space directly:
 maximize `α'x − λ·x'Σx` over `x = w − b`, or maximize expected active return
@@ -731,7 +730,7 @@ surfaces what could make the next one wrong.
    every asset present. The missing-data policy is an explicit choice, and the
    app logs exactly what it did to the panel.
 
-   ![The Data tab, leading with a data-quality verdict and per-asset coverage](https://raw.githubusercontent.com/alanvaa06/Optimization_Engine/main/docs/images/app-data.png)
+   ![The Data tab, leading with a data-quality verdict and per-asset coverage](https://raw.githubusercontent.com/alanvaa06/finport-optengine/main/docs/images/app-data.png)
 2. **Assets** — per-asset statistics (extended metrics on a toggle) plus a
    drawdown-episode table with peak, trough, recovery and time underwater.
 3. **Assumptions & constraints** — editable expected returns, weight bounds,
@@ -745,7 +744,7 @@ surfaces what could make the next one wrong.
    feasibility check** that names the constraint making the problem
    impossible and what to change, before you ever press solve.
 
-   ![The constraints tab, with the method card and the live feasibility check](https://raw.githubusercontent.com/alanvaa06/Optimization_Engine/main/docs/images/app-constraints.png)
+   ![The constraints tab, with the method card and the live feasibility check](https://raw.githubusercontent.com/alanvaa06/finport-optengine/main/docs/images/app-constraints.png)
 4. **Optimize** — a compliance banner, KPI cards, concentration and
    diversification measures, a **policy-exposure table** that says where the
    book landed on every layer and marks which bucket actually stopped it, a
@@ -1300,12 +1299,12 @@ The narrative above says what the engine is for. Three documents say what it
 | | |
 | --- | --- |
 | **API reference** | Every one of the 168 exported names with its signature, parameters, units and errors — generated from the docstrings by `scripts/build_api_docs.py`, so it cannot drift from the code. Build it locally with `pip install "finport-optengine[docs]"` then `python scripts/build_api_docs.py`; CI publishes it to GitHub Pages on every push to `main`. |
-| [`docs/ERRORS.md`](https://github.com/alanvaa06/Optimization_Engine/blob/main/docs/ERRORS.md) | The refusal contract: all twenty-four exception types, which to catch, which are recoverable, the CLI's exit codes, and the failures that are *reported* rather than raised — degraded cost models, skipped identifiers, post-solve constraint breaches. |
-| [`AGENTS.md`](https://github.com/alanvaa06/Optimization_Engine/blob/main/AGENTS.md) | The API map and the `--json` CLI contract, written for a caller who wants the shortest correct program. |
+| [`docs/ERRORS.md`](https://github.com/alanvaa06/finport-optengine/blob/main/docs/ERRORS.md) | The refusal contract: all twenty-four exception types, which to catch, which are recoverable, the CLI's exit codes, and the failures that are *reported* rather than raised — degraded cost models, skipped identifiers, post-solve constraint breaches. |
+| [`AGENTS.md`](https://github.com/alanvaa06/finport-optengine/blob/main/AGENTS.md) | The API map and the `--json` CLI contract, written for a caller who wants the shortest correct program. |
 
 ## Where the methods come from
 
-[`docs/RESEARCH.md`](https://github.com/alanvaa06/Optimization_Engine/blob/main/docs/RESEARCH.md) is the reading behind these methods: what
+[`docs/RESEARCH.md`](https://github.com/alanvaa06/finport-optengine/blob/main/docs/RESEARCH.md) is the reading behind these methods: what
 López de Prado, Cajas, Grinold & Kahn, Meucci, Raffinot and the rest actually
 claim, which of it this engine implements, and — the part usually left out —
 which of it was read and deliberately deferred, with the reason. If you want to
@@ -1313,4 +1312,4 @@ know why there is no EVaR here yet, that is where it says so.
 
 ## License
 
-MIT — see [LICENSE](https://github.com/alanvaa06/Optimization_Engine/blob/main/LICENSE).
+MIT — see [LICENSE](https://github.com/alanvaa06/finport-optengine/blob/main/LICENSE).

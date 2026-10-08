@@ -33,12 +33,25 @@ OIDC claim, so a wrong repository name or environment fails closed:
 | --- | --- |
 | PyPI Project Name | `finport-optengine` |
 | Owner | `alanvaa06` |
-| Repository name | `Optimization_Engine` |
+| Repository name | `finport-optengine` |
 | Workflow name | `release.yml` |
 | Environment name | `testpypi` on TestPyPI, `pypi` on PyPI |
 
 The two indexes are separate accounts. Registering on one does nothing for
 the other.
+
+### After renaming the repository
+
+The repository was renamed from `Optimization_Engine` to `finport-optengine`.
+A publisher registered under the old name no longer matches the OIDC claim —
+GitHub redirects the old URL, but the claim carries the current repository
+name — so the next tag builds, verifies, and then has its upload rejected.
+**Before pushing that tag**, open the project's publishing settings on each
+index (PyPI: *Manage → Publishing*; TestPyPI likewise), add a publisher with
+the repository name `finport-optengine` and the other values in the table
+above, and remove the one that names `Optimization_Engine`. A manual run of
+the workflow (the TestPyPI path) is a free way to confirm the new publisher
+before a real release depends on it.
 
 ### 2. Create the two GitHub environments
 

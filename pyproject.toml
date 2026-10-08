@@ -49,10 +49,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/alanvaa06/optimization_engine"
-Repository = "https://github.com/alanvaa06/optimization_engine"
-Issues = "https://github.com/alanvaa06/optimization_engine/issues"
-Changelog = "https://github.com/alanvaa06/optimization_engine/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/alanvaa06/finport-optengine"
+Repository = "https://github.com/alanvaa06/finport-optengine"
+Issues = "https://github.com/alanvaa06/finport-optengine/issues"
+Changelog = "https://github.com/alanvaa06/finport-optengine/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 # Plotly figures from ``optimization_engine.reporting.plots``. The module
