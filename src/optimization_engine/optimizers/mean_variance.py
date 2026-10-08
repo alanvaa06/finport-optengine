@@ -240,8 +240,10 @@ class MaxSharpeOptimizer(BaseOptimizer):
     than silently dropped: a turnover budget (affine, not homogeneous), an
     open budget (``fully_invested=False`` — the ray fixes a direction, and
     the result always sums to one), and the case where the tangency ray
-    points the wrong way because no asset earns more than the risk-free
-    rate.
+    points the wrong way because no allocation the mandate allows earns more
+    than the risk-free rate — :class:`NoPositiveExcessReturnError`, which a
+    long-short book whose assets all trail cash does not trigger when a
+    spread between them beats it.
     """
 
     name = "max_sharpe"
@@ -254,13 +256,14 @@ class MaxSharpeOptimizer(BaseOptimizer):
             raise ValueError("Max-Sharpe needs both expected_returns and cov_matrix")
         rf = self.risk_free_rate
         excess = mu - rf
-        if np.all(excess <= 0):
-            raise ValueError(
-                f"Every expected return is at or below the risk-free rate "
-                f"({rf:.2%}), so no portfolio has a positive Sharpe ratio and "
-                "the tangency portfolio is undefined. Lower the risk-free rate "
-                "or revisit the expected returns."
-            )
+        # Whether *any* allocation beats cash is a question about the feasible
+        # set, not about the assets one at a time. Asked per asset, it refused
+        # every long-short book whose assets all trail cash (review item O10),
+        # and passed a box that caps the only asset above it — whose ray then
+        # came back "infeasible", naming no constraint because none is at fault.
+        best = self._best_feasible_excess(excess, sigma)
+        if best is not None and best <= 0:
+            raise NoPositiveExcessReturnError(best, rf)
 
         ignored = homogeneous_ignored_constraints(self.constraints, "Max-Sharpe")
         if ignored:
@@ -272,7 +275,13 @@ class MaxSharpeOptimizer(BaseOptimizer):
 
         sigma_psd = cp.psd_wrap(sigma)
         objective = cp.Minimize(cp.quad_form(y, sigma_psd))
-        cons = [excess @ y == 1]
+        # The ray is normalized by the best feasible excess rather than by 1.
+        # The transform is homogeneous, so the weights are the same, but
+        # ``κ = Σy`` now sits near one: with an excess of 1e-7 the unscaled
+        # ray needed κ ≈ 1e7, past the feasibility tolerance of CLARABEL, SCS
+        # and OSQP alike — all three answered "infeasible".
+        scaled = excess / best if best is not None and np.isfinite(best) else excess
+        cons = [scaled @ y == 1]
         cons += build_scaled_constraints(
             y, kappa, self.assets, self.constraints, cov_matrix=sigma
         )
@@ -299,3 +308,75 @@ class MaxSharpeOptimizer(BaseOptimizer):
             )
         self._diagnostics.update(info.as_dict())
         return np.array(y.value) / scale
+
+    def _best_feasible_excess(
+        self, excess: np.ndarray, sigma: np.ndarray
+    ) -> float | None:
+        """The highest excess return any allocation the ray solve allows earns.
+
+        Measured over what the ray actually imposes — the budget, the box, the
+        layers, a gross cap and the benchmark budgets, but not a turnover
+        budget or an open budget, which it cannot carry — with the feasibility
+        module's machinery: the knapsack closed form under box and budget, two
+        LPs otherwise.
+
+        Returns:
+            The best excess return, or ``None`` when it cannot be measured: an
+            infinite bound (the LP has no finite answer to compare against
+            zero), an infeasible mandate (the solve says so in its own terms)
+            or a solver that could not answer.
+        """
+        from dataclasses import replace
+
+        from optimization_engine.optimizers._cvxpy_helpers import bounds_arrays
+        from optimization_engine.optimizers.feasibility import reachable_return_range
+
+        ray = replace(
+            self.constraints,
+            fully_invested=True,
+            turnover_limit=None,
+            previous_weights=None,
+        )
+        lb, ub = bounds_arrays(self.assets, ray)
+        if not (np.isfinite(lb).all() and np.isfinite(ub).all()):
+            return None
+        found = reachable_return_range(
+            pd.Series(excess, index=self.assets),
+            ray,
+            self.assets,
+            pd.DataFrame(sigma, index=self.assets, columns=self.assets),
+        )
+        return None if found is None else float(found[1])
+
+
+class NoPositiveExcessReturnError(ValueError):
+    """No allocation the mandate allows earns more than the risk-free rate.
+
+    The tangency portfolio is undefined there: every Sharpe ratio on offer is
+    at or below zero, so there is nothing to maximize. A ``ValueError``, like
+    the per-asset refusal it replaces.
+
+    Attributes:
+        best_excess_return: The highest excess return any feasible allocation
+            earns, in the units of the expected returns.
+        risk_free_rate: The rate it was measured against.
+    """
+
+    def __init__(self, best_excess_return: float, risk_free_rate: float) -> None:
+        """Build the error from the best excess return the mandate allows.
+
+        Args:
+            best_excess_return: The maximum of ``(μ − rf)'w`` over the
+                feasible set.
+            risk_free_rate: The risk-free rate.
+        """
+        self.best_excess_return = float(best_excess_return)
+        self.risk_free_rate = float(risk_free_rate)
+        super().__init__(
+            "No allocation these constraints allow earns more than the "
+            f"risk-free rate ({self.risk_free_rate:.2%}): the best feasible "
+            f"excess return is {self.best_excess_return:.2%}, so no portfolio "
+            "has a positive Sharpe ratio and maximizing it is infeasible. "
+            "Lower the risk-free rate, revisit the expected returns, or loosen "
+            "the caps on the assets that do beat cash."
+        )

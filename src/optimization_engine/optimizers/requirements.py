@@ -267,7 +267,8 @@ REQUIREMENTS: dict[str, MethodRequirements] = {
             "Expected returns are accurate — the tangency portfolio is the "
             "most estimation-sensitive point on the whole frontier.",
             "You can borrow and lend at the risk-free rate.",
-            "At least one asset earns more than the risk-free rate.",
+            "Some allocation the mandate allows earns more than the "
+            "risk-free rate — for a long-only book, at least one asset must.",
             "A turnover budget cannot be imposed on this solve.",
         ),
     ),
