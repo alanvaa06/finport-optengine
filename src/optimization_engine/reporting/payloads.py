@@ -46,7 +46,7 @@ import pandas as pd
 #: worth automating an alert on — the worst case — the one number the
 #: structured output omitted.
 #:
-#: ``2.3`` adds three keys. ``data_source``, on the check, optimize and
+#: ``2.3`` adds four keys. ``data_source``, on the check, optimize and
 #: backtest payloads: which panel the numbers were computed on, and whether
 #: it is synthetic. The CLI used to fall back to the built-in sample when no
 #: price file was named, and nothing in the payload could tell those weights
@@ -54,9 +54,12 @@ import pandas as pd
 #: backtest, with ``usable``, ``clean`` and ``findings`` added inside the one
 #: ``check`` already carried: a run on a panel with an error-level finding
 #: exited 0 and its document never mentioned it; the findings reached stderr
-#: only. And ``ingest``, on all three: the request the panel was fetched
-#: with, its window resolved — an ingest with no end date ends on the day it
-#: runs.
+#: only. ``ingest``, on all three: the request the panel was fetched with,
+#: its window resolved — an ingest with no end date ends on the day it runs.
+#: And ``condition_number_infinite``, on the covariance diagnostics: an
+#: infinite condition number — a singular estimate — has to be ``null`` in
+#: strict JSON, which is also what "not computed" looks like; the flag
+#: tells the two apart.
 SCHEMA_VERSION = "2.3"
 
 
@@ -152,8 +155,10 @@ def portfolio_diagnostics_payload(diagnostics: Any) -> dict[str, Any] | None:
     """Concentration and exposure diagnostics.
 
     ``effective_n`` against ``effective_n_risk`` is the pair worth reading
-    together: the first counts positions by capital, the second by risk
-    contribution, and the gap between them is what a weights table hides.
+    together: the first counts positions by their share of gross capital, the
+    second by the size of their risk contribution — a hedge counts, whichever
+    way it points — and the gap between them is what a weights table hides.
+    Both lie between 1 and the number of assets.
 
     Args:
         diagnostics: A
@@ -405,6 +410,11 @@ def covariance_diagnostics_payload(diagnostics: Any) -> dict[str, Any] | None:
     ``condition_number`` together mean the optimiser is fitting noise, which
     no amount of solver precision fixes.
 
+    A singular estimate has an infinite condition number, which strict JSON
+    cannot carry: ``condition_number`` is then ``null`` and
+    ``condition_number_infinite`` is ``true``. A ``null`` with the flag
+    ``false`` means the number could not be computed.
+
     Args:
         diagnostics: A
             :class:`~optimization_engine.data.covariance.CovarianceDiagnostics`,
@@ -420,6 +430,10 @@ def covariance_diagnostics_payload(diagnostics: Any) -> dict[str, Any] | None:
         "n_observations": int(diagnostics.n_observations),
         "observations_per_asset": _num(diagnostics.observations_per_asset),
         "condition_number": _num(diagnostics.condition_number),
+        "condition_number_infinite": bool(
+            isinstance(diagnostics.condition_number, (int, float))
+            and math.isinf(diagnostics.condition_number)
+        ),
         "min_eigenvalue": _num(diagnostics.min_eigenvalue),
         "is_psd": bool(diagnostics.is_psd),
         "effective_observations": _num(diagnostics.effective_observations),

@@ -139,6 +139,13 @@ def _assert_path_exists(document: dict[str, Any], path: str) -> None:
         node = node[segment]
 
 
+def _get_path(document: dict[str, Any], path: str) -> Any:
+    node: Any = document
+    for segment in path.split("."):
+        node = node[segment]
+    return node
+
+
 def _set_path(document: dict[str, Any], path: str, value: ParamScalar) -> None:
     segments = path.split(".")
     node: Any = document
@@ -301,7 +308,10 @@ class SweepResults:
         Returns:
             A series named ``"sharpe"``, indexed by :meth:`return_matrix`'s
             columns when aligned — string cell ids — and by integer cell id
-            otherwise. Empty when no cell produced a return stream.
+            otherwise. Empty when no cell produced a return stream. A cell
+            whose stream is constant up to float rounding has no Sharpe and
+            reads NaN; :meth:`deflated_sharpe` leaves it out of the dispersion,
+            with a warning, and still counts it as a trial.
         """
         if not aligned:
             ok = self.frame[self.frame["status"] == "ok"]
@@ -380,6 +390,66 @@ class SweepResults:
             trial_sharpes=trials,
             periods_per_year=self.periods_per_year,
         )
+
+    def base_is_cell(self) -> bool:
+        """Whether the base configuration is itself one of the grid's cells.
+
+        The grid is the full product of the swept values over the base, so
+        the base is a cell exactly when its own value at every swept path is
+        among the values swept there.
+
+        Returns:
+            ``True`` when some cell carries the base configuration unchanged.
+        """
+        document = _config_document(self.base_config)
+        return all(
+            _get_path(document, path) in values
+            for path, values in self.sweep.params.items()
+        )
+
+    def trials_with_base(self, base_returns: pd.Series) -> tuple[int, pd.Series]:
+        """Trial count and trial Sharpes for deflating the *base* run.
+
+        A caller that reports the base configuration's own run — the CLI's
+        headline backtest — and sweeps around it has tried the base too.
+        When the base is a cell it is already counted and measured. When it
+        is not, deflating against :attr:`n_cells` undercounts by one and
+        measures a dispersion the reported run is not part of: base
+        ``risk_parity`` swept over ``min_variance`` and ``hrp`` is three
+        trials, not two.
+
+        Args:
+            base_returns: The base configuration's return stream, evaluated
+                the way the cells were.
+
+        Returns:
+            ``(n_trials, trial_sharpes)``. When the base is a cell, these are
+            :attr:`n_cells` and :meth:`trial_sharpes` unchanged. When it is
+            not, the count is one higher and the Sharpes gain a ``"base"``
+            entry, every Sharpe measured over the dates the cells and the
+            base all share.
+        """
+        if self.base_is_cell():
+            return self.n_cells, self.trial_sharpes()
+
+        from optimization_engine.analytics.performance import sharpe_ratio
+
+        base = base_returns.rename("base")
+        matrix = self.return_matrix()
+        joint = (
+            base.to_frame()
+            if matrix.empty
+            else pd.concat([matrix, base], axis=1, join="inner")
+        ).dropna(how="any")
+        if joint.empty:
+            sharpes = pd.Series(dtype=float, name="sharpe")
+        else:
+            sharpes = pd.Series(
+                sharpe_ratio(joint, 0.0, self.periods_per_year, method="arithmetic"),
+                dtype=float,
+                name="sharpe",
+            )
+        return self.n_cells + 1, sharpes
 
     def overfitting_report(self, n_partitions: int = 16):
         """CSCV across the grid: does the in-sample winner survive out of sample?

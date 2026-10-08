@@ -55,6 +55,7 @@ References:
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from itertools import combinations
 
@@ -62,7 +63,11 @@ import numpy as np
 import pandas as pd
 import scipy.stats
 
-from optimization_engine.analytics.performance import sharpe_ratio
+from optimization_engine.analytics.performance import (
+    _DEGENERATE_STD_RTOL,
+    _dispersion_is_rounding,
+    sharpe_ratio,
+)
 from optimization_engine.analytics.risk import kurtosis, skewness
 
 #: Euler-Mascheroni constant, from the expected maximum of N Gaussians.
@@ -78,13 +83,13 @@ def _period_sharpe(returns: pd.Series) -> float:
     module's Sharpe and the library's headline Sharpe cannot drift apart —
     the deflation below compares one against a distribution of the other.
 
-    A zero-variance stream scores 0.0 rather than ``±inf``: the deflation
-    needs a finite number, and a series that never moved has no risk-adjusted
-    performance to report.
+    A stream that is constant up to float rounding scores NaN, as it does in
+    ``sharpe_ratio``: a series that never moved has no risk-adjusted
+    performance to report. It used to score 0.0 at exactly zero variance and
+    ~1e16 once rounding left a standard deviation of 1e-20, which handed a
+    constant stream a deflated Sharpe of 1.0 and a one-period track record.
     """
     series = returns.dropna()
-    if float(series.std(ddof=1)) <= 0:
-        return 0.0
     return float(sharpe_ratio(series, riskfree_rate=0.0, periods_per_year=1))
 
 
@@ -221,6 +226,9 @@ def deflated_sharpe_ratio(
         returns: Periodic returns of the *selected* strategy.
         n_trials: How many configurations were tried in total. If you swept a
             grid, this is the size of the grid — not the number you reported.
+            Never fewer than the entries in ``trial_sharpes``: a smaller
+            count is raised to that number, with a warning, and
+            :attr:`DeflatedSharpe.n_trials` reports the count used.
         trial_sharpes: The annualized Sharpe of every trial, if you kept
             them. Their variance is the right dispersion to deflate against
             and is far better than a guess. They must be *arithmetic*
@@ -237,7 +245,9 @@ def deflated_sharpe_ratio(
         periods_per_year: Observations per year.
 
     Returns:
-        A :class:`DeflatedSharpe`.
+        A :class:`DeflatedSharpe`. For a stream that is constant up to float
+        rounding its Sharpe and both probabilities are NaN — there is no
+        Sharpe to deflate — and it is not significant.
 
     Raises:
         ValueError: If fewer than 3 observations are supplied.
@@ -258,7 +268,20 @@ def deflated_sharpe_ratio(
     std_error = _sharpe_standard_error(sharpe, n, skew, kurt)
 
     if trial_sharpes is not None:
-        annual = np.asarray(pd.Series(trial_sharpes).dropna(), dtype=float)
+        n_supplied = int(np.asarray(trial_sharpes, dtype=float).size)
+        if n_trials < n_supplied:
+            # Every Sharpe handed in is a configuration that was tried, so the
+            # count of them is a floor on the trial count. Fifty Sharpes with
+            # n_trials=1 used to deflate against one trial — DSR 0.999 where
+            # the fifty give 0.793.
+            warnings.warn(
+                f"n_trials={n_trials} is fewer than the {n_supplied} trial Sharpes "
+                f"supplied; deflating against {n_supplied}.",
+                UserWarning,
+                stacklevel=2,
+            )
+            n_trials = n_supplied
+        annual = _usable_trial_sharpes(trial_sharpes, periods_per_year)
         if annual.size < 2:
             raise ValueError(
                 "trial_sharpes needs at least 2 entries to have a variance; "
@@ -290,6 +313,35 @@ def deflated_sharpe_ratio(
     )
 
 
+def _usable_trial_sharpes(
+    trial_sharpes: pd.Series | np.ndarray, periods_per_year: int
+) -> np.ndarray:
+    """The trial Sharpes that can enter a dispersion, annualized.
+
+    A NaN is a trial with no Sharpe — a constant return stream, or a cell
+    too short to measure — and so is an infinite one. So is a finite Sharpe
+    beyond what any stream with real dispersion can produce, the residue of
+    a constant measured before that was refused: a single 1e17 used to set
+    the deflation benchmark of a whole grid. They are left out of the
+    *dispersion* with a warning; they still count in ``n_trials``, because
+    they were configurations someone tried.
+    """
+    supplied = pd.Series(np.asarray(trial_sharpes, dtype=float).ravel())
+    per_period = supplied.abs() / np.sqrt(periods_per_year)
+    usable = np.isfinite(supplied) & (per_period < 1.0 / _DEGENERATE_STD_RTOL)
+    dropped = int((~usable).sum())
+    if dropped:
+        warnings.warn(
+            f"{dropped} of the {len(supplied)} trial Sharpes are not finite, or too "
+            "large for a stream with any dispersion — a constant return stream has "
+            "no Sharpe ratio — and were left out of the dispersion. They still "
+            "count as trials.",
+            UserWarning,
+            stacklevel=3,
+        )
+    return supplied[usable].to_numpy(dtype=float)
+
+
 def _psr(sharpe: float, benchmark: float, n: int, skew: float, kurt: float) -> float:
     """Probabilistic Sharpe ratio, all arguments per period."""
     std_error = _sharpe_standard_error(sharpe, n, skew, kurt)
@@ -313,7 +365,8 @@ def minimum_track_record_length(
     ``periods_per_year`` for years. The number grows without bound as the
     observed Sharpe approaches the benchmark — a strategy that barely beats
     its benchmark can never be shown to beat it — and ``inf`` is returned when
-    it does not beat it at all.
+    it does not beat it at all. A stream that is constant up to float rounding
+    has no Sharpe ratio, and returns NaN.
 
     Args:
         returns: Periodic returns.
@@ -338,6 +391,10 @@ def minimum_track_record_length(
     excess = series - rf_period
 
     sharpe = _period_sharpe(excess)
+    if not np.isfinite(sharpe):
+        # A constant stream: no Sharpe, so no track record makes it significant
+        # or insignificant. It used to come back as one period.
+        return float("nan")
     benchmark = benchmark_sharpe / np.sqrt(periods_per_year)
     if sharpe <= benchmark:
         return float("inf")
@@ -487,7 +544,9 @@ def probability_of_backtest_overfitting(
         Returns:
             One score per candidate: the mean return under ``metric="mean"``, or
             the mean over the standard deviation under ``"sharpe"``, with a
-            zero-variance candidate scored zero rather than as a division by zero.
+            candidate that is constant up to float rounding scored zero rather
+            than as a division by (almost) zero. Comparing with exactly zero
+            let a constant 1bp candidate score ~1e16 and win every split.
 
         Raises:
             ValueError: If ``metric`` is neither ``"sharpe"`` nor ``"mean"``.
@@ -500,7 +559,8 @@ def probability_of_backtest_overfitting(
                 f"Unknown metric {metric!r}. Use 'sharpe' or 'mean'."
             )
         std = rows.std(axis=0, ddof=1)
-        return np.divide(mean, std, out=np.zeros_like(mean), where=std > 0)
+        constant = _dispersion_is_rounding(std, np.abs(rows).mean(axis=0))
+        return np.divide(mean, std, out=np.zeros_like(mean), where=~constant)
 
     logits: list[float] = []
     in_sample: list[float] = []

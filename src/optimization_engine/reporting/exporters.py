@@ -8,6 +8,7 @@ A weights tab on its own is a number without its provenance.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -167,7 +168,14 @@ def run_sheets(
             benchmark and none is passed, one is built from the run so that a
             workbook exported without extra arguments still carries the
             relative numbers.
+
+    Returns:
+        ``sheet name -> frame``. When a performance report cannot be built —
+        a benchmark sharing no dates with the walk-forward, say — its sheets
+        are left out, an ``omitted_sheets`` sheet names them with the reason,
+        and a ``UserWarning`` is issued.
     """
+    omitted: list[dict[str, str]] = []
     sheets: dict[str, pd.DataFrame] = {
         "weights": run.result.weights.to_frame("weight"),
         "summary": pd.DataFrame(
@@ -207,10 +215,12 @@ def run_sheets(
         if performance is None:
             try:
                 performance = run.performance(riskfree_rate=riskfree_rate)
-            except (ValueError, KeyError):
-                # A benchmark that shares no dates with the panel is reported
-                # by the UI; it must not take the whole workbook down with it.
+            except (ValueError, KeyError) as exc:
+                # A benchmark that shares no dates with the panel must not take
+                # the whole workbook down with it — but the sheets it costs are
+                # named, not silently missing.
                 performance = None
+                _omit(omitted, "performance_*", exc)
     if performance is not None:
         sheets.update(performance_sheets(performance))
 
@@ -302,6 +312,22 @@ def run_sheets(
                         prefix="oos_",
                     )
                 )
-            except (ValueError, KeyError):
-                pass
+            except (ValueError, KeyError) as exc:
+                _omit(omitted, "oos_performance_*", exc)
+    if omitted:
+        sheets["omitted_sheets"] = pd.DataFrame(omitted, columns=["sheets", "reason"])
     return sheets
+
+
+def _omit(omitted: list[dict[str, str]], sheets: str, exc: Exception) -> None:
+    """Record sheets the workbook leaves out, and warn, so the gap is visible.
+
+    These used to be dropped with nothing to show for it: a reader of the
+    workbook could not tell a report with no relative panel from one whose
+    relative panel failed.
+    """
+    reason = f"{type(exc).__name__}: {exc}"
+    omitted.append({"sheets": sheets, "reason": reason})
+    warnings.warn(
+        f"The report omits the {sheets} sheets: {reason}", UserWarning, stacklevel=3
+    )

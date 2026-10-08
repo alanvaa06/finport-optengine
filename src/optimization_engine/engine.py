@@ -45,6 +45,7 @@ from optimization_engine.data.covariance import (
     CovarianceDiagnostics,
     covariance_diagnostics,
     covariance_from_config,
+    nearest_psd,
 )
 from optimization_engine.frontier import FrontierResult, efficient_frontier
 from optimization_engine.optimizers._cvxpy_helpers import SolverFailure
@@ -363,8 +364,8 @@ class EngineRun:
 
         Args:
             frequency: How often the book is rebalanced back to target.
-            transaction_cost_bps: Round-trip cost charged on the traded notional,
-                in basis points.
+            transaction_cost_bps: Cost per side, in basis points, charged on
+                every unit of traded notional, buys and sells alike.
 
         Returns:
             A :class:`~optimization_engine.analytics.backtest.BacktestResult` with
@@ -581,8 +582,8 @@ class EngineRun:
         Args:
             run: The run to describe. ``None`` builds an in-sample replay of this
                 run's own weights.
-            riskfree_rate: Per-period risk-free rate for the ratio metrics.
-                Defaults to the config's.
+            riskfree_rate: Annual risk-free rate for the ratio metrics, as a
+                fraction. Defaults to the config's.
             n_trials: How many configurations were tried before settling on this
                 one, for the deflated Sharpe. Do not guess it — run a sweep and
                 let it count itself.
@@ -757,7 +758,8 @@ class EngineRun:
         Args:
             walk_forward_result: The out-of-sample run to compare against this
                 run's own in-sample replay.
-            riskfree_rate: Per-period risk-free rate for the ratio metrics.
+            riskfree_rate: Annual risk-free rate for the ratio metrics, as a
+                fraction; converted to a per-period rate internally.
 
         Returns:
             One row per statistic, a column per sample, and a ``Degradation``
@@ -777,7 +779,8 @@ class EngineRun:
         """Standard performance statistics for the run's own return stream.
 
         Args:
-            riskfree_rate: Per-period risk-free rate used by the ratio metrics.
+            riskfree_rate: Annual risk-free rate used by the ratio metrics, as
+                a fraction; converted to a per-period rate internally.
             extended: Include the fuller set — higher moments, drawdown detail,
                 tail statistics — rather than the headline figures alone.
 
@@ -1111,9 +1114,13 @@ def run_engine(
     if returns.shape[1] == 0:
         raise ValueError("run_engine received returns with no asset columns.")
 
-    cov = covariance_from_config(returns, config)
+    # Diagnose the estimate before the PSD repair: diagnosed after it, the
+    # "not positive semi-definite, repaired" finding could never fire.
+    raw_cov = covariance_from_config(returns, config, ensure_psd=False)
+    cov = nearest_psd(raw_cov)
+    cov.attrs.update(raw_cov.attrs)
     cov_diag = covariance_diagnostics(
-        cov,
+        raw_cov,
         n_observations=len(returns),
         method=config.covariance_method,
         ewma_lambda=config.ewma_lambda,

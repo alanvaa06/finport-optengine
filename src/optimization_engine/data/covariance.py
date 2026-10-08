@@ -460,7 +460,9 @@ def covariance_matrix(
     return cov
 
 
-def covariance_from_config(returns: pd.DataFrame, config) -> pd.DataFrame:
+def covariance_from_config(
+    returns: pd.DataFrame, config, ensure_psd: bool = True
+) -> pd.DataFrame:
     """Estimate the covariance the way one :class:`EngineConfig` asks for.
 
     Every part of the engine that re-estimates a covariance — the frontier
@@ -473,6 +475,9 @@ def covariance_from_config(returns: pd.DataFrame, config) -> pd.DataFrame:
         returns: Periodic returns, one column per asset.
         config: The configuration supplying the estimator, the annualization
             basis, the EWMA decay and the denoising settings.
+        ensure_psd: Repair the estimate with :func:`nearest_psd`. Off only
+            for a caller that diagnoses the raw estimate and repairs it
+            itself, as :func:`~optimization_engine.engine.run_engine` does.
 
     Returns:
         The annualized covariance, indexed and columned by asset.
@@ -486,6 +491,7 @@ def covariance_from_config(returns: pd.DataFrame, config) -> pd.DataFrame:
         denoise_method=getattr(config, "denoise_method", "constant_residual"),
         denoise_alpha=getattr(config, "denoise_alpha", 0.0),
         detone=getattr(config, "detone", 0),
+        ensure_psd=ensure_psd,
     )
 
 

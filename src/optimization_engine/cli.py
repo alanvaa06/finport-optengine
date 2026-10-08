@@ -1683,8 +1683,9 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
             delisting_grace=args.delisting_grace,
         )
         print(f"  {sweep_results.describe()}")
-        n_trials = max(sweep_results.n_cells, 1)
-        trial_sharpes = sweep_results.trial_sharpes()
+        # The headline run is the base config: one more trial when the grid
+        # does not contain it.
+        n_trials, trial_sharpes = sweep_results.trials_with_base(walk.run.returns)
         try:
             overfitting = sweep_results.overfitting_report()
         except ValueError as exc:
