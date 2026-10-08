@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -271,3 +272,108 @@ def test_an_interior_gap_is_resolved_by_alignment_not_by_dropping_returns(
     discarded = len(prices_to_returns(prices).dropna(how="any"))
     assert kept == discarded + 1, "one missing price used to cost two returns"
     assert payload["covariance"]["n_observations"] == kept
+
+
+# ---------------------------------------------------------------------------
+# A point-in-time backtest walks the panel alignment would have cut
+# ---------------------------------------------------------------------------
+
+#: Rows of the point-in-time panel: one name lists late, one stops printing,
+#: and one has a single missing price in the middle of its life.
+PIT_ROWS = 700
+PIT_LISTS = 150
+PIT_DELISTS = 450
+PIT_GAP = 300
+
+
+@pytest.fixture
+def listings_and_delistings(tmp_path: Path):
+    """A panel whose common window is [late listing, first delisting]."""
+    prices = sample_dataset(n_periods=PIT_ROWS)[
+        ["US_Equity", "US_Treasuries", "Gold", "IG_Credit"]
+    ].copy()
+    prices.loc[prices.index[:PIT_LISTS], "IG_Credit"] = float("nan")
+    prices.loc[prices.index[PIT_DELISTS:], "Gold"] = float("nan")
+    prices.loc[prices.index[PIT_GAP], "US_Treasuries"] = float("nan")
+    csv = tmp_path / "listings.csv"
+    prices.to_csv(csv)
+    config = tmp_path / "minimal.yaml"
+    config.write_text("optimizer: equal_weight\nperiods_per_year: 252\n")
+    return prices, csv, config
+
+
+def test_delisting_grace_walks_the_whole_panel_not_the_common_window(
+    capsys, listings_and_delistings
+):
+    """Alignment used to cut the run off on the day the first name delisted.
+
+    ``--delisting-grace`` exists to sell a name that stopped printing, and it
+    could never fire: ``align_panel("common")`` had already trimmed the panel
+    to the dates every name printed on, so the backtest ended on the delisting
+    and ``notes.delistings`` was always empty. The walk-forward now runs over
+    every date; only a gap *inside* a name's life is aligned away, as before.
+    """
+    prices, csv, config = listings_and_delistings
+    code, payload, err = _run_json(
+        capsys,
+        [
+            "backtest",
+            "--config", str(config),
+            "--prices", str(csv),
+            "--lookback", "100",
+            "--rebalance-every", "50",
+            "--delisting-grace", "5",
+            "--json",
+        ],
+    )
+    assert code == 0
+    assert payload["window"]["end"] == str(prices.index[-1])
+    # Starts ``lookback`` returns into the panel, not into the common window.
+    assert payload["window"]["start"] == str(prices.index[101])
+    delistings = payload["notes"]["delistings"]
+    assert set(delistings) == {"Gold"}
+    assert delistings["Gold"]["last_print"] == prices.index[PIT_DELISTS - 1].isoformat()
+
+    # The alignment the initial solve used is still reported, word for word,
+    # and the walk-forward's own panel is reported beside it.
+    _, common = align_panel(prices, method="common")
+    assert payload["alignment"][: len(common)] == common
+    walk_line = payload["alignment"][len(common)]
+    assert "walk-forward" in walk_line and "interior" in walk_line
+    assert "Alignment:" in err
+
+
+def test_a_universe_is_built_on_the_unaligned_panel(
+    capsys, listings_and_delistings, tmp_path
+):
+    """The screen sees the late listing arrive instead of a panel that began with it."""
+    prices, csv, config = listings_and_delistings
+    rules = tmp_path / "printed.yaml"
+    rules.write_text(
+        yaml.safe_dump(
+            {"rules": [{"kind": "rolling", "panel": "returns", "window": 100,
+                        "agg": "count", "op": ">=", "value": 100}]}
+        )
+    )
+    code, payload, _ = _run_json(
+        capsys,
+        [
+            "backtest",
+            "--config", str(config),
+            "--prices", str(csv),
+            "--lookback", "100",
+            "--rebalance-every", "50",
+            "--universe", str(rules),
+            "--json",
+        ],
+    )
+    assert code == 0
+    assert payload["window"]["end"] == str(prices.index[-1])
+    breadth = payload["notes"]["universe"]["breadth"]
+    # Before the late name has a full window the screen admits three names,
+    # after the delisted one's window runs dry it admits three again, and in
+    # between all four. A panel cut to the common window only ever had four.
+    assert set(breadth.values()) == {3, 4}
+    # Every window the screen admits is complete, so nothing failed to solve.
+    assert payload["notes"]["n_failed_solves"] == 0
+
