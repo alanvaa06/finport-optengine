@@ -61,6 +61,12 @@ def _aligned(
 ) -> tuple[pd.DataFrame, pd.Series]:
     """Restrict both inputs to the dates on which both are observed.
 
+    The frame keeps every date on which *any* of its columns is observed, so
+    a column that starts late still carries NaN rows. Anything computed per
+    column has to pair that column with the benchmark on its own dates — see
+    :func:`_pair` — or it compares the column over one window with the
+    benchmark over another.
+
     Raises:
         ValueError: When the two series share no dates at all — a silent
             empty result would otherwise propagate as NaN metrics.
@@ -76,26 +82,37 @@ def _aligned(
     return frame.loc[common], bench.loc[common]
 
 
+def _pair(frame: pd.DataFrame, bench: pd.Series, column) -> tuple[pd.Series, pd.Series]:
+    """One column of an aligned frame and the benchmark, on that column's dates.
+
+    A walk-forward column that starts a year after the fitted one used to
+    meet the benchmark over the fitted one's dates: beta ran OLS over its NaN
+    rows and came back NaN without a word, and up-capture compounded the
+    column over its own dates but the benchmark over all of them.
+    """
+    series = frame[column]
+    observed = series.notna()
+    return series[observed], bench[observed]
+
+
 def _geometric_capture(
     r: pd.Series | pd.DataFrame, rb: pd.Series | pd.DataFrame, upside: bool
 ) -> pd.Series:
-    frame, bench = _aligned(r, rb)
-    mask = bench > 0 if upside else bench < 0
-    bench_periods = bench[mask]
-    n_b = len(bench_periods)
-    if n_b == 0:
-        return pd.Series({c: float("nan") for c in frame.columns})
-    bench_geo = float((1 + bench_periods).prod() ** (1 / n_b) - 1)
-
+    frame, aligned_bench = _aligned(r, rb)
     out: dict[str, float] = {}
     for col in frame.columns:
-        series = frame.loc[mask, col].dropna()
-        n = len(series)
-        if n == 0 or bench_geo == 0:
+        series, bench = _pair(frame, aligned_bench, col)
+        mask = bench > 0 if upside else bench < 0
+        n = int(mask.sum())
+        if n == 0:
             out[col] = float("nan")
-        else:
-            geo = float((1 + series).prod() ** (1 / n) - 1)
-            out[col] = geo / bench_geo
+            continue
+        bench_geo = float((1 + bench[mask]).prod() ** (1 / n) - 1)
+        if bench_geo == 0:
+            out[col] = float("nan")
+            continue
+        geo = float((1 + series[mask]).prod() ** (1 / n) - 1)
+        out[col] = geo / bench_geo
     return pd.Series(out)
 
 
@@ -205,11 +222,12 @@ def beta(r: pd.Series | pd.DataFrame, rb: pd.Series | pd.DataFrame) -> pd.Series
             with ``finport-optengine[stats]``.
     """
     frame, bench = _aligned(r, rb)
-    x = sm.add_constant(bench.rename("benchmark"))
-    out = {
-        col: float(sm.OLS(frame[col], x).fit().params.iloc[1])
-        for col in frame.columns
-    }
+    out: dict[str, float] = {}
+    for col in frame.columns:
+        y, x = _pair(frame, bench, col)
+        out[col] = float(
+            sm.OLS(y, sm.add_constant(x.rename("benchmark"))).fit().params.iloc[1]
+        )
     return pd.Series(out, name="Beta")
 
 
@@ -233,16 +251,17 @@ def conditional_beta(
         MissingDependencyError: If statsmodels is not installed. Install it
             with ``finport-optengine[stats]``.
     """
-    frame, bench = _aligned(r, rb)
+    frame, aligned_bench = _aligned(r, rb)
     rows: dict[str, dict[str, float]] = {}
     for col in frame.columns:
+        series, bench = _pair(frame, aligned_bench, col)
         entry: dict[str, float] = {}
         for label, mask in (("Up Beta", bench > 0), ("Down Beta", bench < 0)):
             if int(mask.sum()) < 3:
                 entry[label] = float("nan")
                 continue
             x = sm.add_constant(bench[mask].rename("benchmark"))
-            entry[label] = float(sm.OLS(frame.loc[mask, col], x).fit().params.iloc[1])
+            entry[label] = float(sm.OLS(series[mask], x).fit().params.iloc[1])
         entry["Beta Asymmetry"] = entry.get("Down Beta", np.nan) - entry.get(
             "Up Beta", np.nan
         )
@@ -290,10 +309,19 @@ def information_ratio(
         One value per column of ``r``.
     """
     frame, bench = _aligned(r, rb)
-    ann_excess = annualize_returns(frame, periods_per_year) - annualize_returns(
-        bench, periods_per_year
+    pairs = {col: _pair(frame, bench, col) for col in frame.columns}
+    ann_excess = pd.Series(
+        {
+            col: annualize_returns(y, periods_per_year)
+            - annualize_returns(x, periods_per_year)
+            for col, (y, x) in pairs.items()
+        },
+        dtype=float,
     )
-    te = annualize_volatility(frame.sub(bench, axis=0), periods_per_year)
+    te = pd.Series(
+        {col: annualize_volatility(y - x, periods_per_year) for col, (y, x) in pairs.items()},
+        dtype=float,
+    )
     return ann_excess / te
 
 
@@ -432,9 +460,12 @@ def m_squared(
         it against the benchmark's own annualized return.
     """
     frame, bench = _aligned(r, rb)
-    sr = sharpe_ratio(frame, riskfree_rate, periods_per_year)
-    bench_vol = float(annualize_volatility(bench, periods_per_year))
-    return pd.Series(sr * bench_vol + riskfree_rate, name="M-squared")
+    out: dict[str, float] = {}
+    for col in frame.columns:
+        y, x = _pair(frame, bench, col)
+        sr = float(sharpe_ratio(y, riskfree_rate, periods_per_year))
+        out[col] = sr * float(annualize_volatility(x, periods_per_year)) + riskfree_rate
+    return pd.Series(out, name="M-squared")
 
 
 def appraisal_ratio(
@@ -513,9 +544,12 @@ def relative_drawdown(
         negative below it.
     """
     frame, bench = _aligned(r, rb)
-    bench_wealth = (1.0 + bench).cumprod()
-    ratio = (1.0 + frame).cumprod().div(bench_wealth, axis=0)
-    return ratio / ratio.cummax().clip(lower=1.0) - 1.0
+    out: dict[str, pd.Series] = {}
+    for col in frame.columns:
+        y, x = _pair(frame, bench, col)
+        ratio = (1.0 + y).cumprod() / (1.0 + x).cumprod()
+        out[col] = ratio / ratio.cummax().clip(lower=1.0) - 1.0
+    return pd.DataFrame(out, index=frame.index, columns=frame.columns)
 
 
 def relative_summary_extras(

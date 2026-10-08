@@ -463,3 +463,73 @@ def test_effective_n_risk_stays_in_range_with_a_hedge():
     assert effective_n_risk(book, cov) == pytest.approx(expected)
     assert 1.0 <= effective_n_risk(book, cov) <= 2.0
     assert portfolio_diagnostics(book, cov).effective_n_risk == pytest.approx(expected)
+
+
+# ---------------------------------------------------------------------------
+# 6. Relative metrics pair each column with the benchmark on its own dates
+# ---------------------------------------------------------------------------
+#
+# The frame was aligned on the dates where *any* column had data. A column
+# that started later then met NaN: beta ran OLS over them and returned NaN
+# without a word, and up-capture compounded the column over its own dates but
+# the benchmark over all of them (1.0872 against 1.0841 on matched dates).
+
+
+@pytest.fixture()
+def staggered():
+    rng = np.random.default_rng(7)
+    idx = _days(500)
+    bench = pd.Series(rng.normal(0.0004, 0.01, 500), index=idx, name="bench")
+    early = bench * 0.9 + rng.normal(0, 0.002, 500)
+    late = bench * 1.1 + rng.normal(0, 0.002, 500)
+    late.iloc[:250] = np.nan
+    frame = pd.DataFrame({"fitted": early, "walk_forward": late})
+    return frame, bench
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "beta", "up_capture", "down_capture", "capture_ratio",
+        "information_ratio", "tracking_error", "m_squared", "treynor_ratio",
+    ],
+)
+def test_a_late_column_is_measured_on_its_own_dates(staggered, name):
+    from optimization_engine.analytics import relative
+
+    pytest.importorskip("statsmodels")
+    frame, bench = staggered
+    metric = getattr(relative, name)
+    together = metric(frame, bench)
+    for column in frame.columns:
+        alone = metric(frame[column].dropna().to_frame(column), bench)
+        assert np.isfinite(together[column])
+        assert together[column] == pytest.approx(float(alone[column]), rel=1e-12)
+
+
+def test_up_capture_matches_the_hand_computation_on_shared_dates(staggered):
+    from optimization_engine.analytics.relative import up_capture
+
+    frame, bench = staggered
+    late = frame["walk_forward"].dropna()
+    rising = bench.loc[late.index] > 0
+    own, ref = late[rising], bench.loc[late.index][rising]
+    expected = ((1 + own).prod() ** (1 / len(own)) - 1) / (
+        (1 + ref).prod() ** (1 / len(ref)) - 1
+    )
+    assert up_capture(frame, bench)["walk_forward"] == pytest.approx(expected)
+
+
+def test_conditional_beta_and_relative_drawdown_pair_each_column(staggered):
+    from optimization_engine.analytics.relative import conditional_beta, relative_drawdown
+
+    pytest.importorskip("statsmodels")
+    frame, bench = staggered
+    late = frame["walk_forward"].dropna().to_frame("walk_forward")
+    pd.testing.assert_series_equal(
+        conditional_beta(frame, bench).loc["walk_forward"],
+        conditional_beta(late, bench).loc["walk_forward"],
+    )
+    together = relative_drawdown(frame, bench)["walk_forward"].dropna()
+    alone = relative_drawdown(late, bench)["walk_forward"]
+    pd.testing.assert_series_equal(together, alone)
