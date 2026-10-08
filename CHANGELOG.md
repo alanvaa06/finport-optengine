@@ -11,6 +11,502 @@ with what to do about it.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The CLI no longer optimizes synthetic data when `--prices` is forgotten.**
+  `optimize --config c.yaml --json` exited 0 with plausible weights on the
+  built-in sample panel and nothing anywhere saying so. `optimize`, `backtest`
+  and `check` now need exactly one of `--prices`, `--provider`, `--yahoo` or
+  `--sample`, and exit 2 otherwise — including when two are given, where
+  `--sample` used to win silently. `scripts/run_optimization.py` had the same
+  fallback and now requires `--prices` or `--sample`.
+- **A piped run on Windows no longer crashes on α, δ or ←.** stdout and stderr
+  are set to `errors="backslashreplace"`, so `optengine list-optimizers | more`
+  and `optimize` on the example config finish — the second used to die before
+  writing its workbook.
+- **An unreadable config or price file is exit 2, not a traceback.** A missing
+  config, a misspelt key, malformed YAML or a missing `--prices` file escaped
+  as a traceback with exit 1, with or without `--json`.
+- **Every refusal carries its reason into the `--json` payload.** An infeasible
+  mandate, a solver that gave up, a breach under `--strict-mandate`, an unknown
+  method name, a shock outside the panel, an unreadable stress or universe
+  file, a failed walk-forward and an invalid backtest spec all emitted
+  `"error": "the command exited before producing a result"`. The spec error's
+  "Pass --initial-capital." hint is now kept for the one error it answers.
+- **The MCP tools report the engine's own refusals.** An unknown optimizer, a
+  shock outside the panel, an invalid backtest spec and a text-valued CSV all
+  reached the client as "Error executing tool X" with the reason discarded.
+  They now arrive as `ToolError` with the reason; a text column is named by
+  position, not by its header.
+- **`docs/ERRORS.md` and `main()`'s docstring said an infeasible `check` exits
+  1.** It exits 2, as `AGENTS.md` and the tests say; the table now agrees.
+
+- **Monthly and weekly panels were annualized as daily.**
+  `IngestRequest.periods_per_year` was never read and the CLI used the
+  config's 252 whatever the dates said: a month-end panel reported a 28.7%
+  volatility and a 170% return for a book at 6.3% and 8.1%.
+- **The `file` provider blocked currency conversion.** It labelled every
+  series with the currency it was to be converted into, so nothing was
+  converted, and the CLI then set the config's `currencies` map aside. A peso
+  series was optimized as dollars with exit 0. File series are now in an
+  unknown currency, and the config map is set aside only for series the ingest
+  actually converted.
+- **`ema` expected returns rested on the window's first observation.**
+  `ewm(adjust=False)` gave it 77% of the weight on two years of months, so one
+  bad first month took μ to −86.7%. The weights are now normalized over the
+  window, and `ema` annualizes arithmetically, like `mean`.
+- **`geometric_mean` annualized a late-listing asset over the whole panel.**
+  The exponent counted every row; it now counts the asset's own (4.6% → 9.45%
+  in the repro).
+- **FX rates were one period stale on dates the rate series skips.** Rates
+  were reindexed onto the price dates before the forward fill, so a weekend
+  month-end took the previous month-end's rate (7 of 24 months). The fill is
+  now an as-of join.
+- **A stopped FX series was carried forward without limit.** A price date more
+  than `MAX_STALE_FX_DAYS` (10) business days past its newest rate now raises
+  `FXError`, like a leading gap longer than `MAX_LEADING_FX_GAP`.
+- **Michaud resampling shifted ranks after a failed one.** One rank failing in
+  one draw moved every rank above it down a slot and dropped the top rank,
+  while reporting "Averaged 8 of 8". Ranks are averaged by position over the
+  draws where they solved; a rank that solved in fewer than half is left out
+  and named.
+- **`bootstrap_frontier` centred its curve on a different μ from its band**,
+  and raised for a config without `expected_returns`. Both now come from
+  `resolve_expected_returns`.
+- **A series that rarely moves was reported clean.** More than 25% exactly-zero
+  returns now raises a `zero_returns` warning.
+- **A failed Marchenko-Pastur fit fell back to σ² = 1 silently.** It now warns
+  and sets `noise_fit_failed`.
+- **The ingest cache.** A warm run dropped the cold run's currency warning; an
+  edited file was served from the cache as the old panel; a tz-aware panel was
+  stored but never loaded. All three are fixed.
+
+- **A threshold or rank universe dropped a name on the very bar it crashed.**
+  Those rules judge date `t` on `t`'s own data, and the runner read the mask
+  at or before `t`. With `execution_lag=0` — the default of `BacktestSpec`
+  and of `EngineRun.walk_forward_run` — the book chosen on `t` is held over
+  `t`, so the rules-file example "not in freefall" (`returns > -0.5`) held
+  0.0 in every name on its −60% session and turned a run that lost 65.48% a
+  year into one that made 7.72%. `Eligibility` now records whether a verdict
+  reads its own date (`same_bar`: true for threshold and rank, inherited
+  through `&`, `|`, `~`, hysteresis and `hold_through`), and
+  `point_in_time_mask` reads such a universe strictly before each bar when
+  the lag is zero. Rolling rules, membership frames and every run with a lag
+  of one or more read exactly as before. Same panel, fixed: −65.25%.
+- **`delisting_grace` looked one bar ahead.** Silence was measured through
+  the decision date, the bar the decision's book is held over, while the
+  solve window ends the bar before. With `delisting_grace=0` a name that
+  halted on the decision bar was sold at its last mark and dodged the −50%
+  it reopened at: +3.04% against −48.58% for the same process without the
+  rule. Staleness is now measured on the bars strictly before the decision;
+  a name whose first print is on the decision bar likewise enters at the
+  next decision.
+- **`--universe` and `--delisting-grace` could not correct survivorship on
+  the CLI.** Every panel was aligned to the dates all names printed on —
+  [last listing, first delisting] — before either flag saw it, so the
+  backtest ended on the day the first name delisted and `notes.delistings`
+  was always empty (a 1,000-row panel ran on 400). With either flag the
+  walk-forward, the sweep, the tearsheet and the holdout replay now run on
+  the unaligned panel, with only gaps inside a name's life aligned away; the
+  initial solve keeps the aligned panel and the alignment log says which
+  panel each step used.
+
+- **A drawdown is measured from the capital invested, not from the first
+  close.** `drawdown_series` started its running peak at the wealth after the
+  first return, so a series that opened with a loss never counted it:
+  `[-10%, -10%, +5%, +1%]` reported a -10% maximum drawdown against a true
+  -19%, a Calmar of -10.0 against -5.26, and three -5% bars a -9.75% drawdown
+  against -14.26%. The peak now starts at log-wealth zero. Max Drawdown and
+  Calmar in `summary_stats`, the Ulcer index, time under water,
+  `drawdown_table`, the sweep's `max_drawdown` column, `relative_drawdown`,
+  `plot_drawdown` and `plot_relative_wealth` all inherit it, as do the CDaR
+  optimizer's realized-drawdown extras and HERC's drawdown risk measure, which
+  call `drawdown_series`. A series that opens with a gain is unchanged; the
+  sample-panel figures quoted in `docs/RESEARCH.md` do not move.
+- **A tearsheet whose deflation failed no longer says no trial count was
+  supplied.** `build_tearsheet` caught every exception from the deflation and
+  the caveat then read "No trial count was supplied" for a run whose caller
+  had passed `n_trials=40`. Fewer than two usable trial Sharpes now fall back
+  to the run's own sampling variance — the stand-in `deflated_sharpe_ratio`
+  documents — with a caveat saying so; a `ValueError` from the deflation is
+  quoted in the caveat and in `metadata["deflation_note"]`; any other
+  exception propagates.
+- **A return stream that is constant up to rounding has no Sharpe ratio.** The
+  zero-variance guards compared the standard deviation with exactly zero, and
+  a constant 1bp stream keeps one near 1e-20, so it scored a Sharpe of about
+  1.2e17. Alone it got a deflated Sharpe of 1.0 and a minimum track record of
+  one period; in a sweep it set the deflation benchmark to 8e16, taking every
+  cell's DSR to 0, and took the PBO of a skill-free grid from 0.314 to 0.000.
+  A standard deviation at or below √ε (about 1.5e-8) of the mean absolute
+  return is now treated as rounding: `sharpe_ratio`,
+  `probabilistic_sharpe_ratio`, `deflated_sharpe_ratio` and
+  `minimum_track_record_length` return NaN for it, and CSCV scores it zero as
+  it already did at exactly zero variance.
+- **Active risk counts the names only the benchmark holds.**
+  `active_risk_decomposition` decomposed only the assets listed in `weights`,
+  so a book given by its holdings lost every benchmark-only underweight:
+  `{A: .5, B: .5}` against equal-weight A/B/C reported a 4.71% tracking error
+  against a true 8.16%. It now works over the union of both sides.
+- **Effective N stays between 1 and the number of assets.** `effective_n` was
+  `1/Σw²`, which scored `[1.5, -0.5]` as 0.4 positions and a book half in cash
+  as twice the assets it holds. It is now `(Σ|w|)²/Σw²`, identical for a fully
+  invested long-only book. `effective_n_risk` counts risk contributions by
+  their size, so a hedge no longer drives it below 1: a long-only pair at
+  ρ = -0.9 moves from 0.598 to 1.40.
+- **Relative metrics pair each column with the benchmark on its own dates.**
+  On a frame whose columns start on different dates, `beta` ran OLS over the
+  late column's NaN rows and returned NaN silently, and up/down capture, the
+  information ratio, M² and the relative drawdown measured the column over its
+  own dates but the benchmark over all of them (up-capture 1.0872 against
+  1.0841 on matched dates). A single series is unchanged.
+- **The trial count is never below the number of trial Sharpes supplied.**
+  Fifty trial Sharpes with `n_trials=1` deflated against one trial — DSR =
+  PSR = 0.999, where fifty give 0.793. A smaller `n_trials` is now raised to
+  the count with a warning, and `DeflatedSharpe.n_trials` reports the count
+  used.
+- **No observations is no annual return.** `annualize_returns` returned 0.0
+  for an empty or all-NaN series, which read as a 0% CAGR; it now returns NaN,
+  per column for a frame.
+- **The base configuration counts as a trial when the sweep grid does not
+  contain it.** `optengine backtest --sweep` deflates its headline run — the
+  base config — against the grid. With base `mean_variance` swept over
+  `min_variance,equal_weight` it deflated against 2 trials and a dispersion
+  the headline was not part of; it now uses 3, with the headline's Sharpe in
+  the dispersion. New `SweepResults.base_is_cell()` and
+  `SweepResults.trials_with_base()`.
+- **An infinite condition number is distinguishable from a missing one, and
+  the "not PSD, repaired" warning can fire.** The covariance payload carries
+  `condition_number_infinite` next to the `null` strict JSON forces on an
+  infinite number. `run_engine` used to diagnose the matrix `nearest_psd` had
+  already repaired, so the warning about an indefinite estimate was
+  unreachable; it now diagnoses the raw estimate and solves against the
+  repaired one, as before. `covariance_from_config` gains an `ensure_psd`
+  passthrough for this.
+- **A workbook that leaves sheets out says which.** `run_sheets` dropped the
+  relative-performance and out-of-sample sheets when their report could not
+  be built — the second behind `except (ValueError, KeyError): pass` — and the
+  workbook looked complete. It now adds an `omitted_sheets` sheet with the reason and issues a
+  `UserWarning`.
+
+- **NCO long-short was clipped by a box nobody set.** The per-cluster and
+  inter-cluster sub-problems were built with no bounds, which `get_bounds`
+  reads as the long-short default of (−1, 1). Under a (−10, 10) mandate two
+  tight pairs came back as [0.6, 0, 0.4, 0] against the [1.155, −0.495,
+  0.495, −0.155] of *MLAM* snippet 7.6, with no violation and a clean audit.
+  Long-short layers now carry explicit (−inf, inf) bounds, so the mandate on
+  the combined book is the only box, and NCO matches the snippet to 1e-12.
+  The ray-space builder writes down only finite bounds.
+- **An indefinite covariance is refused before any solve.** `cp.psd_wrap`
+  trusts the matrix, so a long-short minimum-variance solve on one with a
+  negative eigenvalue came back `optimal` at `w'Σw = −0.0445`, reported as
+  zero volatility. `optimize()` now raises `NonPSDCovarianceError` (a
+  `ValueError`) when the smallest eigenvalue is below −1e-8 of the trace. The
+  engine's estimators already repair their output with `nearest_psd`, so only
+  a matrix handed to an optimizer directly is affected; the message names the
+  repair.
+- **A return floor below the reachable range is a warning, not a fatal.**
+  `target_return` has been a floor since 0.7.0, so every allocation clears a
+  target below the range; the pre-flight still called it impossible, and
+  `--strict` refused a mandate the solve answers.
+- **Black-Litterman's pre-flight builds the posterior the solve uses.** With
+  `bl_calibrate_risk_aversion` it ignored the implied δ: a 12% market return
+  gave δ = 6.95 in the solve and 2.5 in the pre-flight, posteriors of
+  [7.7%, 11.9%, 16.3%] against [4.1%, 5.6%, 7.2%], and a 16.22% target the
+  solve meets exactly was fatal. Both now call `market_portfolio` and
+  `resolve_risk_aversion`.
+- **Black-Litterman binds a tracking-error budget on Σ, and the registry says
+  it binds one.** `supports_benchmark_limits` was `False` and the factory
+  warned the limit would not be enforced, while the solve enforced it on the
+  posterior `Σ + M`: a 1% budget came back at 0.98% against Σ. It is now
+  measured on Σ, like every other method and the audit.
+- **Max-diversification raises a refused inaccurate answer instead of
+  projecting.** With `accept_inaccurate=False` an `optimal_inaccurate` verdict
+  became `fallback_projection` with the tracking-error budget dropped. And a
+  second `optimize()` on the same instance no longer reports the first solve's
+  `bounds_mode`, `projection_distance` or `fallback_reason`: diagnostics are
+  cleared at the start of every solve.
+- **A constant series counts as zero variance.** Its sample variance is
+  rounding (1.86e-37 for a flat cash line), so the exact-zero guards let it
+  through and inverse volatility and HRP put 100% of the book in it. The
+  guards in HRP, HERC, NCO, inverse volatility and max-diversification now
+  share `zero_variance_assets`: at most 1e-12 of the largest variance is zero.
+- **Max-Sharpe decides whether any allocation beats cash, not each asset.**
+  A box capping the only asset above the risk-free rate surfaced as
+  `SolverFailure` "no allocation satisfies every constraint"; it now raises
+  `NoPositiveExcessReturnError` (a `ValueError`) naming the best feasible
+  excess return. A long-short book whose assets all trail cash is no longer
+  refused when a spread between them beats it (review item O10). An excess of
+  1e-7 no longer comes back infeasible: the ray is normalized by the best
+  feasible excess. A long-short tangency with no finite box and no maximizer
+  raises `SolverFailure("unbounded")` instead of returning ±1.9e9 weights.
+- **NCO max-Sharpe survives a cluster below the risk-free rate.** That
+  cluster is solved for minimum variance, named in
+  `extras["nco_min_variance_fallback"]`, and warned about; a bond pair below
+  cash used to fail the whole solve while plain max-Sharpe answered
+  [0.61, 0.39, 0, 0], which NCO now returns too.
+- **A target or budget a method ignores is recorded.** `target_return` and
+  `target_volatility` on a method that does not take them, and
+  `fully_invested=False` on risk parity, now appear in
+  `extras["ignored_constraints"]`, and the pre-flight no longer validates a
+  target the solve will not read. Minimum variance with an open budget
+  reports `invested_fraction` and a `budget_note`.
+- **CVaR and CDaR compare a return floor with the arithmetic mean.** With no
+  expected returns supplied they annualized the history as `(1+m)^ppy − 1`, so
+  a 56.6% floor above the 49.4% best arithmetic mean "solved" at 45.8%. They
+  now call `expected_returns_from_history("mean")`.
+- **The fast projection keeps an open budget open and sees a gross cap**
+  (review item O15). HRP with `fully_invested=False` and three 25% caps raised
+  `InfeasibleBoundsError`; the projection is now the clip when there is no
+  budget, and a gross cap that can bind takes the exact path.
+
+- **A missing or misspelt expected return is no longer a silent zero.**
+  `resolve_expected_returns` filled the gaps with 0.0 before any optimizer saw
+  the vector, so the optimizer's own missing-return warning could never fire
+  on the engine path: with a key spelt `EM_Equityy`, `EM_Equity` was optimized
+  at exactly 0.0 with `run.warnings` empty. A vector that both misses panel
+  assets and names assets the panel does not hold — what a misspelling looks
+  like — now raises `ConfigurationError` naming both. A missing asset alone is
+  still filled with 0.0, but a `UserWarning` names it and `run_engine` records
+  it in `run.warnings` and `extras["missing_expected_returns"]`. Extra names
+  alone are ignored and reported in `extras["ignored_expected_returns"]`,
+  because a walk-forward hands a screened window a subset of the columns. The
+  CLI's cut of the panel to the config's universe now goes into the alignment
+  log, on stderr and in `--json`.
+- **A holding that left the universe counts against the turnover budget.** The
+  constraint and both turnover reports reindexed the previous book onto the
+  universe, so selling a departed name cost nothing: with 30% in one and
+  `turnover_limit=0.50`, the book traded 0.80, the audit was clean and
+  `diagnostics.turnover` said 0.50. The forced sale is now a constant on the
+  left side of the budget and is counted in every turnover figure. That case is
+  now infeasible, as it should be — the sale is 0.30 and redeploying it is
+  another 0.30 — and the pre-solve analysis names the turnover budget.
+- **One benchmark per run (review item E7).** `benchmark_weights` drove the
+  tracking-error and active-share constraints while `benchmark` drove the
+  return stream and `performance()`, and the two `EngineRun` helpers disagreed
+  about precedence. With `benchmark=equal_weight` and a 60/40 vector the solve
+  held tracking error to 3.00% against 60/40 while the report measured 5.64%
+  against 1/N. Every use now resolves through the new
+  `EngineConfig.effective_benchmark()`.
+- **An explicit `benchmark_weights` vector is validated.** A name outside the
+  universe was dropped, so `{"SPX_Index": 0.6, "US_Treasuries": 0.4}` with
+  `SPX_Index` outside became a benchmark summing to 0.4 and the budget was
+  imposed against that. The vector is now read as a `custom_weights` spec:
+  an unknown name raises `BenchmarkError` and the weights are normalized.
+- **A benchmark member with no return no longer earns 0%.**
+  `portfolio_returns_from_weights` filled the panel's gaps with zero, so a
+  50/50 benchmark whose second member listed half-way was exactly half the
+  first member until then (7.3% volatility against 14.6%), and a matching book
+  showed a 5.2% tracking error and -16.6% a year of alpha. A period is now NaN
+  when any member with non-zero weight has no return, and `buy_and_hold` is
+  bought on the first period every member trades. A complete panel gives the
+  same numbers as before.
+- **A stressed covariance has to be a covariance.** A replacement
+  `covariance_scale` was checked for symmetry only; a crisis matrix with an
+  eigenvalue of -0.467 was accepted and reported a volatility of 0.1024 for a
+  book that missed the negative direction. It now raises `StressError` when
+  the `Shock` is built.
+- **The value half of review item E8.** `periods_per_year` of 0 or below (an
+  "optimal" equal-weight book with zero volatility) and `ewma_lambda` outside
+  `(0, 1)` (a `LinAlgError` from inside the estimator) raise
+  `ConfigurationError` at construction. `long_only`, `fully_invested`,
+  `strict_mandate` and `denoise` are read strictly: the JSON string `"false"`
+  is false, where `bool("false")` made it true, and anything other than
+  true/false or 0/1 raises. `EngineConfig(benchmark={...})` is coerced instead
+  of failing with `AttributeError` on first use. Under `strict_mandate`, a
+  bound or layer assignment naming an asset the panel does not hold raises
+  rather than warns.
+- **`EngineConfig.from_dict` and `to_dict` copy what they hand over.** The
+  config shared `risk_budget`, the views, `extra` and `benchmark_weights` with
+  the dict it was read from, and `OptimizerSpec.to_dict()` handed out the
+  spec's own `extra`.
+
+### Changed
+
+- **`data_source` in the check, optimize and backtest payloads; schema 2.3.**
+  `kind`, `synthetic`, `path`, `provider`, `identifiers`. Branch on
+  `synthetic`, which is true for `--sample` and for the `sample` provider. The
+  MCP tools take the source as an explicit argument and leave it `null`.
+- **`optimize --json` writes no workbook unless `--output` names one.**
+  `output_path` is `null` by default. Without `--json` the default
+  `outputs.xlsx` is unchanged. Replacing an existing file, from `optimize` or
+  `backtest --output`, is announced on stderr.
+- **The MCP tools have compute limits.** The schema refuses `lookback` below 2,
+  `rebalance_every` below 1 (zero used to mean "the default", silently) and
+  negative costs; a panel may have at most 200 assets and 10,000 rows, and a
+  backtest at most 250 re-solves. `rebalance_every=5` on the sample panel took
+  12 s, `1` is ~1,500 solves. The CLI has no such limits.
+- **The release workflow publishes a tag only from `main`, after the tests.**
+  New `on-main` (`git merge-base --is-ancestor`) and `test` jobs gate the PyPI
+  upload. Actions other than PyPA's publish action are pinned by commit SHA,
+  and `build`/`twine` by version.
+- **`pandas-stubs` in the `dev` extra is capped at 3.0.5.260730.** The next
+  release reports four type errors on unchanged code, which would turn the
+  typecheck job red.
+
+- **The CLI and the MCP tools annualize on the data's own frequency.** A
+  config that does not set `periods_per_year` now takes it from the ingest
+  interval, or from the median spacing of the dates; one that does set it is
+  checked against the dates and refused (exit 2) when they contradict it. A
+  daily panel with the default 252 is unchanged. Daily data accepts any stated
+  value from 240 to 366.
+- **`DenoiseReport.n_signal_eigenvalues` is the count the fit found**, zero on
+  a pure-noise panel. The factor the filter always keeps is reported
+  separately as `n_factors_kept`; the filtered matrix does not change.
+- **`PanelCache.store` returns `False` when the entry left in place is one
+  that was already there**, as on Windows when a reader holds it open, and the
+  ingest service now says "Not cached" when a write did not land.
+- **`sample_dataset()` ends on a fixed date, `SAMPLE_END` (2025-12-31).** The
+  same seed now gives the same panel, dates included, on any day.
+
+- **Threshold and rank universes act one bar later at `execution_lag=0`.**
+  See the first fix. A characteristic that is genuinely known before its
+  date opens can be screened into a membership frame and wrapped with
+  `Eligibility.from_signal`, which is read on its own date at any lag.
+- **A delisting is declared one decision later than before when the name
+  went quiet on the decision bar itself.** See the second fix; this also
+  applies at `execution_lag=1`, where the walk-forward's decision is still
+  taken from the bars before its date.
+- **A CLI backtest with `--universe` or `--delisting-grace` covers the
+  whole panel.** Track records lengthen and include the names that listed
+  late or delisted. A window that shows the solver a name with missing
+  returns — typically one listed fewer than `--lookback` bars ago — fails
+  and carries the previous book forward, as the library always has; the run
+  prints how to admit only names with a full window.
+- **`run_backtest` and `backtest_weights` warn when a dated weight schedule
+  meets `execution_lag=0`.** At zero lag a target dated `t` is traded at the
+  close before `t` and earns `t`'s return; a schedule stamped with the close
+  that produced it needs `execution_lag=1`. Nothing about the run changes,
+  and `walk_forward_run`, whose schedule is dated by its first holding bar,
+  does not warn. Every description of the lag — `BacktestSpec`, the
+  tearsheet caveat, the calendar, the CLI and app help, the README — now
+  says this instead of "rebalanced on the close of the decision date".
+
+- **Payload schema 2.3** — the same 2.3 that adds `data_source`,
+  `data_quality` and `ingest`: `covariance_diagnostics` also gains
+  `condition_number_infinite`. No key changed meaning.
+- **Units in the docstrings now match the code** (review §2.1 and §2.2, which
+  were still open). The risk-free rate on `RunResult.summary`,
+  `BacktestResult.summary`, `EngineRun.tearsheet`,
+  `EngineRun.in_vs_out_of_sample` and `EngineRun.absolute_summary` is annual,
+  not per-period; `BaseOptimizer`'s `risk_free_rate` is in the units of the
+  expected returns. Turnover is `Σ|Δw|`, buys plus sells — two-sided, twice
+  the one-way figure desks quote — and a `turnover_limit` of 0.20 lets 10% of
+  a fully invested book change hands. The one-number cost of
+  `CostSpec.from_bps` and `EngineRun.backtest` is charged per side, not
+  round-trip. No number changes.
+
+- **`calibrate_risk_aversion=True` without a market return raises
+  `ConfigurationError`.** It used to fall back to δ = 2.5 without a word. Pass
+  `bl_market_return`, or turn calibration off.
+- **Black-Litterman's pre-flight refuses market caps summing to zero**, as the
+  solve always did, instead of previewing an equal-weight prior.
+- **A long-short max-Sharpe that used to raise `ValueError` "Every expected
+  return is at or below the risk-free rate" may now solve**, and a long-only
+  one that used to fail with `SolverFailure("infeasible")` now raises
+  `NoPositiveExcessReturnError`. Code catching `ValueError` keeps working.
+- **`constraints_from_config` leaves out a target the configured method does
+  not take**, unless called with `keep_unsupported_targets=True`, which is
+  what the factory does.
+
+- **A config naming two different benchmarks is refused.** `benchmark_weights`
+  used to win over `benchmark` in the solve only. Setting both to different
+  things now raises `BenchmarkError`, at construction and again at use; the
+  same vector written both ways is one benchmark. Keep one of the two.
+- **`benchmark_weights` is normalized.** It is shorthand for a
+  `custom_weights` spec and now behaves like one. A zero benchmark has to be
+  written as a `custom_weights` spec with `normalize: false`.
+- **`--benchmark` clears the config's `benchmark_weights`.** The flag replaces
+  the config's benchmark block; before, the vector stayed and the solve used
+  it while the report used the flag.
+- **`config/shocks.yaml`.** The "Liquidity squeeze" notes said the scenario
+  modelled diversification breaking down. Its scalar clause scales
+  volatilities only, and the notes now say so. The numbers are unchanged.
+
+### Added
+
+- **Data-quality findings and the resolved ingest window reach the JSON
+  results.** `optimize`, `backtest` and `check` (CLI `--json` and the MCP
+  tools) now carry `data_quality` — `usable`, `clean`, and `findings`, one
+  object per issue with severity, code, asset, message and suggestion — and
+  `ingest`, the request the panel was fetched with, its window resolved, with
+  its fingerprint and whether it came from the cache. A run on a panel with an
+  error-level finding used to exit 0 with a document that never mentioned it.
+  `check` keeps its existing `errors`/`issues` lists. `SCHEMA_VERSION` is 2.3,
+  the same bump that adds `data_source`; the MCP tools now fill `data_source`
+  too.
+- **`optimization_engine.data.frequency`.** `infer_periods_per_year` and
+  `resolve_periods_per_year` decide the annualization factor from a stated
+  value, the ingest interval or the dates' spacing, raising
+  `FrequencyMismatchError` on a contradiction. `config.stated_keys(path)`
+  says which keys a config file actually sets.
+- **`DenoiseReport.n_factors_kept` and `DenoiseReport.noise_fit_failed`**,
+  `ResampledFrontier.rank_counts`, `CacheEntry.notes`, and
+  `PriceProvider.cache_token()`.
+
+- `NonPSDCovarianceError` and `zero_variance_assets` in
+  `optimizers.base`; `NoPositiveExcessReturnError` in
+  `optimizers.mean_variance`; `market_portfolio` and `resolve_risk_aversion`
+  in `optimizers.black_litterman`.
+
+- **`Shock.correlation_shift`.** Moves every correlation that fraction of the
+  way to +1 and keeps every volatility, `Σ' = (1 − s)Σ + s·σσ'`, so a scenario
+  can say that diversification fails. A scalar `covariance_scale` cannot: it
+  moves every book's volatility by the same `√scale`. On the sample
+  risk-parity book, a shift of 0.5 raises volatility ×1.45 and a shift of 1.0
+  ×1.79. It composes with a scalar scale and is refused beside a replacement
+  matrix. The CLI and the library read it; the app's scenario grid carries the
+  scalar multiplier only.
+- **`expected_return_gaps(expected_returns, assets)`** in
+  `optimization_engine.engine`: the assets a vector misses and the names it
+  carries that the universe does not hold.
+
+### Security
+
+- **The Streamlit app reads no file a visitor names.** `streamlit run` listens
+  on every interface, and the Universe tab's "Rules file on disk" box passed
+  any path to the rules loader, whose parse error — shown on the page — quoted
+  the file: a fake `~/.aws/credentials` came back with its key. A typed or
+  uploaded rules document could do the same through `panels:`, and the pandas
+  error quoted a CSV's first cell. The box is gone (a button loads the shipped
+  example; anything else comes through the uploader), and a document that
+  declares `panels:` is refused in the app before anything is read. Screens
+  over a characteristic panel run from `optengine backtest --universe`.
+- **The MCP server confines the paths it reads, and its errors no longer quote
+  files.** `config_path` and `prices_path` must lie under an allowed root —
+  `--root DIR`, else `OPTENGINE_MCP_ROOTS`, else the working directory (none
+  when that is a filesystem root). Network and device paths are refused before
+  they are touched; on Windows, looking up `\\host\share` authenticates to that
+  host. Extension and size (1 MiB for a mandate, 64 MiB for prices) are checked
+  before a byte is read. A file that does not parse is reported by path,
+  exception type and position, never by the parser's message — which quoted a
+  YAML line, a value that would not convert (`'sk-live-SECRETVALUE'`), a JSON
+  list's items as "unknown config keys", or a CSV's first cell.
+- **Text from a data file is never written into a workbook as a formula or a
+  link.** xlsxwriter turns any string starting with `=` into a formula, and
+  asset names come from price-file headers: one CSV header,
+  `=HYPERLINK("http://…"&A1, …)`, became ten live formula cells in the report.
+  Every workbook — `write_excel_report`, the app's two downloads, and the CLI's
+  `ingest`, `sample-data` and `fred` `.xlsx` output — now goes through
+  `reporting.exporters.excel_writer`, which writes strings as text.
+- **`pyarrow>=14.0.1`.** 14.0.0 executes arbitrary code on reading an untrusted
+  Parquet file (CVE-2023-47248), and every entry point accepts one. The `data`
+  and `all` extras admitted it.
+- **`load_config` checks the extension before reading.** It read the whole file
+  first, so any path was loaded into memory before being refused.
+  `load_universe_rules` likewise checks extension and size (1 MiB) first, and
+  reports a parse error by line and column instead of quoting it.
+
+### Documentation
+
+- **Every link points at `alanvaa06/finport-optengine`** — PyPI's project
+  links, the README, `llms.txt`, the API docs' edit links and the HTTP
+  User-Agent. The README banner described 0.5.0 on 0.7.0 and now describes
+  0.7.0.
+- **`docs/RELEASING.md` registers the Trusted Publisher under the new
+  repository name**, with a step to update it on both indexes before the next
+  tag: PyPI compares the name in the OIDC claim literally, so a publisher still
+  named `Optimization_Engine` rejects the upload.
+
 ## [0.7.0] — 2026-09-03
 
 ### Fixed
