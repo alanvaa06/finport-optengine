@@ -426,12 +426,15 @@ result still emits one:
 ```json
 {
   "schema_version": "...",
-  "command": "optimize",
-  "error": "SpecValidationError: execution_lag cannot be negative; got -1.",
-  "exit_code": 1
+  "command": "backtest",
+  "error": "execution_lag cannot be negative; got -1. A negative lag would trade on a decision not yet taken.",
+  "exit_code": 2
 }
 ```
 
+`error` carries the same reason the command printed to stderr — the
+infeasible constraint, the solver that gave up, the breached limit, the
+unknown method name — whether the command returned its code or raised.
 A caller parsing stdout never has to tell "no JSON" apart from "JSON I could
 not read". Note that a run which raised reports the failure *even if it had
 already captured a payload*: emitting that payload under a non-zero exit would

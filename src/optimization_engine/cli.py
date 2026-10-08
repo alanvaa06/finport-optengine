@@ -475,8 +475,7 @@ def _load_stress_into(config, args: argparse.Namespace) -> int:
     try:
         config.stress = load_shocks(path)
     except (OSError, StressError) as exc:
-        print(f"Could not read stress scenarios from {path}: {exc}", file=sys.stderr)
-        return 2
+        return _fail(args, f"Could not read stress scenarios from {path}: {exc}")
     print(f"Loaded {len(config.stress)} stress scenario(s) from {path}")
     return 0
 
@@ -514,8 +513,7 @@ def _load_universe_for(args: argparse.Namespace, returns, prices):
         rules = load_universe_rules(path)
         universe = rules.build(returns=returns, prices=prices)
     except (OSError, UniverseError) as exc:
-        print(f"Could not read the universe from {path}: {exc}", file=sys.stderr)
-        return 2
+        return _fail(args, f"Could not read the universe from {path}: {exc}")
     print(rules.describe())
 
     policy = getattr(args, "universe_policy", "exclude")
@@ -563,13 +561,16 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
     for issue in quality.warnings:
         print(f"Data warning — {issue.describe()}", file=sys.stderr)
     if quality.errors and args.strict:
-        print(
+        return _fail(
+            args,
             "Refusing to optimize on data with errors. Drop --strict to "
             "proceed anyway.",
-            file=sys.stderr,
         )
-        return 2
 
+    # Every refusal below goes through `_fail` rather than a bare print, so
+    # the reason reaches the --json payload as well as stderr. Printed and
+    # returned, it left the payload saying only that the command "exited
+    # before producing a result".
     try:
         run = run_engine(
             returns,
@@ -580,37 +581,33 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
             run_stress=bool(config.stress),
         )
     except InfeasibleConstraintsError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
+        return _fail(args, str(exc))
     except StressError as exc:
-        print(f"Stress test failed: {exc}", file=sys.stderr)
-        return 2
+        return _fail(args, f"Stress test failed: {exc}")
     except MandateViolationError as exc:
         # Raised only under --strict-mandate, and *after* a successful solve:
         # the answer arrived and does not comply. It is a ValueError while
         # SolverFailure is a RuntimeError, so the clause below never sees it —
         # without this one the CLI would leak a traceback for the one failure
         # the flag exists to produce.
-        print(str(exc), file=sys.stderr)
-        print(
+        return _fail(
+            args,
+            f"{exc}\n"
             "  The mandate is satisfiable; this method did not satisfy it. "
             "Pick a method whose bounds are enforced inside the convex "
             "program, loosen the limit named above, or drop --strict-mandate "
             "and read the audit on the result.",
-            file=sys.stderr,
         )
-        return 2
     except SolverFailure as exc:
-        print(f"Optimization failed: {exc}", file=sys.stderr)
+        message = f"Optimization failed: {exc}"
         if config.max_tracking_error is not None or config.max_active_share is not None:
-            print(
-                "  A tracking-error or active-share budget is in force. A "
+            message += (
+                "\n  A tracking-error or active-share budget is in force. A "
                 "benchmark holding an asset your bounds cap below its index "
                 "weight sets a floor on tracking error that no allocation can "
-                "go below — raise the limit, or relax the bound.",
-                file=sys.stderr,
+                "go below — raise the limit, or relax the bound."
             )
-        return 2
+        return _fail(args, message)
 
     for warning in run.warnings:
         print(f"Warning — {warning}", file=sys.stderr)
@@ -862,8 +859,7 @@ def _cmd_describe(args: argparse.Namespace) -> int:
     try:
         req = requirements_for(args.name)
     except KeyError as exc:
-        print(str(exc).strip("\""), file=sys.stderr)
-        return 2
+        return _fail(args, str(exc).strip("\""))
     print(f"{req.display_name}  ({req.name})")
     print(f"\n  {req.summary}")
     print(f"\nUse it when:\n  {req.when_to_use}")
@@ -1339,8 +1335,11 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
             name=Path(args.config).stem,
         )
     except SpecValidationError as exc:
-        print(f"{exc} Pass --initial-capital.", file=sys.stderr)
-        return 2
+        # The hint only for the one validation it answers: appended to every
+        # spec error, it told a caller with a negative --execution-lag to pass
+        # --initial-capital.
+        hint = " Pass --initial-capital." if "initial_capital" in str(exc) else ""
+        return _fail(args, f"{exc}{hint}")
     print(spec.describe())
     if spec.costs.uses_volume and volumes is None:
         print(
@@ -1387,11 +1386,9 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         # the message has to say which flag chose it: a run that stopped
         # because a warm-up period could not be evaluated has not found a
         # problem with the data.
-        print(f"Universe failed: {exc}", file=sys.stderr)
-        return 2
+        return _fail(args, f"Universe failed: {exc}")
     except ValueError as exc:
-        print(f"Walk-forward failed: {exc}", file=sys.stderr)
-        return 2
+        return _fail(args, f"Walk-forward failed: {exc}")
 
     print(f"  {walk.run.describe()}")
     print(f"  {walk.describe()}")
@@ -1445,8 +1442,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         # ``tearsheet`` applies ``config.stress`` to the book the walk-forward
         # ended on, so a shock naming an asset outside the panel surfaces here
         # rather than at the solve.
-        print(f"Stress test failed: {exc}", file=sys.stderr)
-        return 2
+        return _fail(args, f"Stress test failed: {exc}")
     print(f"  {sheet.tca.describe()}")
     if sheet.deflated_sharpe is not None:
         print(f"  {sheet.deflated_sharpe.describe()}")

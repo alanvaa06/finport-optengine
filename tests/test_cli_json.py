@@ -261,6 +261,86 @@ def test_a_returned_failure_carries_its_reason(capsys, tmp_path):
     assert "no expected returns" in payload["error"]
 
 
+def _refusal_argv(case: str, tmp_path: Path) -> list[str]:
+    """A command line that ends in each of the refusals the CLI returns."""
+    import yaml
+
+    impossible = tmp_path / "impossible.yaml"
+    impossible.write_text("bounds:\n  US_Equity: [0.6, 1.0]\n  Cash: [0.6, 1.0]\n")
+    data = yaml.safe_load(Path(CONFIG).read_text())
+    assets = list(data["expected_returns"])
+    data["optimizer"] = {"name": "hrp"}
+    data["previous_weights"] = {a: (1.0 if a == assets[0] else 0.0) for a in assets}
+    data["turnover_limit"] = 0.01
+    unhonoured = tmp_path / "hrp.yaml"
+    unhonoured.write_text(yaml.safe_dump(data))
+    shocks = tmp_path / "shocks.yaml"
+    shocks.write_text(
+        yaml.safe_dump({"shocks": [{"name": "bad", "returns": {"NOT_IN_PANEL": -0.1}}]})
+    )
+    universe = tmp_path / "universe.yaml"
+    universe.write_text(
+        yaml.safe_dump({"rules": [{"kind": "rolling", "panel": "returns", "windwo": 3}]})
+    )
+    short = ["--lookback", "252", "--rebalance-every", "252"]
+    return {
+        "solver_failure": ["optimize", "--config", str(impossible), "--sample"],
+        "infeasible_under_strict": [
+            "optimize", "--config", str(impossible), "--sample", "--strict",
+        ],
+        "mandate_violation": [
+            "optimize", "--config", str(unhonoured), "--sample", "--strict-mandate",
+        ],
+        "unknown_optimizer": ["describe", "nope"],
+        "optimize_stress": [
+            "optimize", "--config", CONFIG, "--sample", "--stress", str(shocks),
+        ],
+        "unreadable_stress_file": [
+            "optimize", "--config", CONFIG, "--sample",
+            "--stress", str(tmp_path / "nowhere.yaml"),
+        ],
+        "backtest_stress": [
+            "backtest", "--config", CONFIG, "--sample", *short, "--stress", str(shocks),
+        ],
+        "unreadable_universe": [
+            "backtest", "--config", CONFIG, "--sample", *short,
+            "--universe", str(universe),
+        ],
+        "bad_spec": [
+            "backtest", "--config", CONFIG, "--sample", "--execution-lag", "-1",
+        ],
+    }[case] + ["--json"]
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("solver_failure", "Optimization failed"),
+        ("infeasible_under_strict", "Minimum weights sum to"),
+        ("mandate_violation", "this method did not satisfy it"),
+        ("unknown_optimizer", "Unknown optimizer 'nope'"),
+        ("optimize_stress", "NOT_IN_PANEL"),
+        ("unreadable_stress_file", "Could not read stress scenarios"),
+        ("backtest_stress", "NOT_IN_PANEL"),
+        ("unreadable_universe", "windwo"),
+        ("bad_spec", "execution_lag"),
+    ],
+)
+def test_every_refusal_carries_its_reason_into_the_payload(
+    capsys, tmp_path, case, expected
+):
+    """A returned 2 used to emit "the command exited before producing a result".
+
+    True, and useless to a caller: the infeasible mandate, the solver that
+    gave up, the breached limit and the unknown method name were all printed
+    to stderr and none of them reached the document the caller parses.
+    """
+    code, payload = _run(capsys, _refusal_argv(case, tmp_path))
+    assert code == 2
+    assert payload["exit_code"] == 2
+    assert expected in payload["error"], payload["error"]
+
+
 def test_backtest_notes_carry_their_values_not_only_their_keys():
     """A note's value must survive serialization.
 
