@@ -22,6 +22,16 @@ have. A decision taken on date ``t`` executes at ``t + execution_lag``, and
 the volatility that prices its impact is estimated on returns strictly
 before ``t``.
 
+**What a schedule's dates mean.** A target dated ``t`` is traded at the start
+of bar ``t + execution_lag`` — at the previous close — and earns that bar's
+return first. With the default lag of zero, then, the date is the first bar
+the target is *held over*, not the close it was decided on, and the target
+must have been built from data before ``t``. That is exactly how the
+walk-forward runner dates its schedule. A schedule stamped with the close
+that produced it — a signal computed on ``t``'s data and dated ``t`` — needs
+``execution_lag=1``; at zero it earns the very return it was computed from,
+and :func:`run_backtest` warns when it is handed a dated schedule that way.
+
 A target dated on a day the market was shut is traded on the next bar, not
 quietly deferred to the next calendar rebalance. Every such move is named in
 ``meta.notes`` — see :func:`_place_schedule_on_bars`.
@@ -41,6 +51,7 @@ inventing a rescaling here would silently overwrite the optimizer's sizing.
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import Any
 
 import numpy as np
@@ -268,8 +279,11 @@ def run_backtest(
         returns: Periodic asset returns, one column per asset. This is the
             evaluation window: every period here is replayed.
         weights: Either one target vector held throughout, or a frame of
-            target weights indexed by the date they become effective — which
-            is what the walk-forward runner produces.
+            target weights indexed by date. Each row is traded at the start
+            of the bar ``spec.execution_lag`` rows after its date and held
+            from that bar on; with the default lag of zero the date *is* the
+            first bar held, so the row may use nothing from that bar. This is
+            how the walk-forward runner dates its schedule.
         spec: The run description. Defaults to a monthly, costless,
             same-period-fill, in-sample replay.
         cost_model: Override the model built from ``spec.costs``. Useful for
@@ -335,11 +349,59 @@ def run_backtest(
         UniverseError: If the universe policy is unknown, or it is ``"raise"``
             and some name was not evaluable on some bar.
 
+    Warns:
+        UserWarning: When ``weights`` is a dated frame and the lag is zero.
+            Nothing about the run changes; the warning says what the dates
+            must mean for the result to be honest.
+    """
+    spec = spec or BacktestSpec()
+    if isinstance(weights, pd.DataFrame) and spec.execution_lag == 0:
+        # Only a warning: a schedule dated by its first holding bar is right
+        # at lag 0 and must not change. One dated by the close it was built
+        # on is look-ahead at lag 0, and the two look identical from here.
+        warnings.warn(
+            "A dated weight schedule is being replayed with execution_lag=0: "
+            "each row is held over the bar it is dated on, so it must use "
+            "nothing from that bar. A schedule dated by the close it was "
+            "computed on needs execution_lag=1.",
+            stacklevel=2,
+        )
+    return _replay(
+        returns,
+        weights,
+        spec,
+        cost_model=cost_model,
+        notes=notes,
+        context_returns=context_returns,
+        prices=prices,
+        volumes=volumes,
+        universe=universe,
+        universe_policy=universe_policy,
+    )
+
+
+def _replay(
+    returns: pd.DataFrame,
+    weights: pd.Series | pd.DataFrame,
+    spec: BacktestSpec,
+    *,
+    cost_model: CostModel | None = None,
+    notes: dict[str, Any] | None = None,
+    context_returns: pd.DataFrame | None = None,
+    prices: pd.DataFrame | None = None,
+    volumes: pd.DataFrame | None = None,
+    universe: Eligibility | None = None,
+    universe_policy: str | None = None,
+) -> RunResult:
+    """The replay behind :func:`run_backtest`, without its schedule warning.
+
+    The walk-forward runner calls this directly: it dates every target on the
+    first bar the book is held, from a window that ends the bar before, so a
+    zero lag is exact for it and the warning would only be noise.
     """
     if returns is None or returns.empty:
         raise ValueError("Cannot backtest on empty returns.")
 
-    spec = spec or BacktestSpec()
     assets = list(returns.columns)
     index = pd.DatetimeIndex(returns.index)
     schedule = _as_schedule(weights, assets, index[0])

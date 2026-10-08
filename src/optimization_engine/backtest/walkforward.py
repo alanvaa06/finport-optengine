@@ -73,7 +73,7 @@ import numpy as np
 import pandas as pd
 
 from optimization_engine.backtest.results import RunResult
-from optimization_engine.backtest.runner import resolve_universe_mask, run_backtest
+from optimization_engine.backtest.runner import _replay, resolve_universe_mask
 from optimization_engine.backtest.spec import BacktestSpec, RebalanceFrequency
 from optimization_engine.universe import Eligibility
 
@@ -85,9 +85,12 @@ class WalkForwardRun:
     Attributes:
         run: The replayed result, tagged out-of-sample.
         weights_history: Target weights by decision date — one row per
-            decision, not per trade, and a failed solve is a row like any
-            other: the book it carries forward, or cash when there is none
-            yet. With a trading cadence finer than the re-solve cadence the
+            decision, not per trade. The decision date is the first bar the
+            book is held over, and the window behind it ends the bar before,
+            which is why ``execution_lag=0`` is exact here and a lag of one
+            holds each book a bar later than it could. A failed solve is a
+            row like any other: the book it carries forward, or cash when
+            there is none yet. With a trading cadence finer than the re-solve cadence the
             book trades more often than this frame has rows, and
             ``run.rebalance_dates`` is the record of that.
         windows: One row per decision — window bounds, length, and status.
@@ -468,7 +471,7 @@ def walk_forward_run(
     # The cost models see the whole history, not just the evaluated slice:
     # a decision made at the first evaluated date has years of returns behind
     # it, and pricing its impact off the slice alone would throw them away.
-    run = run_backtest(
+    run = _replay(
         evaluation,
         weights_history,
         spec,

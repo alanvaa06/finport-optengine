@@ -3,7 +3,9 @@
 Two distinct calendars, and conflating them is the classic way a backtest
 buys at a price it could not have known. The *decision* calendar is when a
 target is chosen; the *execution* calendar is when it is traded. They differ
-by the execution lag, which is zero only in a simulation.
+by the execution lag, which is zero only in a simulation. A target traded
+at position ``p`` is held from bar ``p`` on and earns that bar's return, so
+at zero lag the decision date is itself the first holding bar.
 """
 
 from __future__ import annotations
@@ -65,8 +67,10 @@ def execution_positions(
         index: The simulation's date index.
         decision_dates: The dates on which targets are chosen.
         execution_lag: How many periods pass between deciding and trading.
-            ``1`` is the desk's default — you do not trade on a close you have
-            not seen.
+            ``1`` is the desk's default for a target decided on its date's
+            close — you do not trade on a close you have not seen. A
+            walk-forward schedule is already dated by its first holding bar,
+            so ``0`` is exact for it and ``1`` adds a bar.
 
     Returns:
         ``{decision position: execution position}``, both indexing ``index``.

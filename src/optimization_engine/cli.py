@@ -286,8 +286,10 @@ def _build_parser() -> argparse.ArgumentParser:
     backtest.add_argument(
         "--execution-lag", type=int, default=1, metavar="N",
         help="Periods between a decision and its fill. Defaults to 1 — a desk "
-             "does not trade on a close it has not seen. Pass 0 for the "
-             "conventional (optimistic) same-period fill.",
+             "does not trade on a close it has not seen. Pass 0 to hold each "
+             "book from its decision date: the walk-forward decides from the "
+             "bar before, so 0 fills at the very close it decided on (the "
+             "conventional, optimistic fill).",
     )
     backtest.add_argument(
         "--holdout", metavar="YYYY-MM-DD",
