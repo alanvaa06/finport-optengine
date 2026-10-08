@@ -60,6 +60,7 @@ from optimization_engine.optimizers._clustering import (
     correlation_from_covariance,
     optimal_clusters,
 )
+from optimization_engine.optimizers._cvxpy_helpers import SolverFailure
 from optimization_engine.optimizers.base import BaseOptimizer, PortfolioConstraints
 
 #: Objectives the two nested layers can be solved with.
@@ -237,6 +238,53 @@ class NCOOptimizer(BaseOptimizer):
         weights = solved.weights.reindex(assets)
         return self._unit_budget(weights, layer)
 
+    def _intra_solve(
+        self,
+        label: int,
+        cov: pd.DataFrame,
+        mu: pd.Series | None,
+        fallbacks: dict[str, str],
+    ) -> pd.Series:
+        """One cluster's book; its minimum variance where max-Sharpe has none.
+
+        Max-Sharpe has no answer inside a cluster in two cases: none of its
+        allocations beats the risk-free rate (a bond cluster at 1% against a
+        2% rate), or — long-short, with no box inside the cluster — the ratio
+        has a supremum but no maximum. The first used to fail the whole NCO
+        solve while plain max-Sharpe on the same inputs answers, because the
+        cluster's members can still earn their place in the book through the
+        inter-cluster layer; the second was hidden by the (−1, 1) box the
+        layers used to carry. So the cluster is solved for minimum variance
+        instead, the one objective that needs no return, and the substitution
+        is recorded in ``fallbacks``. The inter-cluster layer gets no such
+        fallback: if no combination of clusters beats cash, no portfolio
+        does, and NCO raises as max-Sharpe would.
+
+        Args:
+            label: The cluster's id.
+            cov: The cluster's covariance.
+            mu: The cluster's expected returns, or ``None`` under the
+                ``min_variance`` objective.
+            fallbacks: ``cluster id -> reason``, filled in on fallback.
+
+        Returns:
+            The cluster's weights, summing to one.
+        """
+        from optimization_engine.optimizers.mean_variance import (
+            NoPositiveExcessReturnError,
+        )
+
+        layer = f"cluster {label}"
+        try:
+            return self._sub_solve(cov, mu, layer=layer)
+        except (NoPositiveExcessReturnError, SolverFailure) as exc:
+            if mu is None or (
+                isinstance(exc, SolverFailure) and exc.status != "unbounded"
+            ):
+                raise
+            fallbacks[str(label)] = str(exc)
+            return self._sub_solve(cov, None, layer=layer)
+
     @staticmethod
     def _unit_budget(weights: pd.Series, layer: str) -> pd.Series:
         """Restore the unit budget the nesting assumes, or say why it cannot.
@@ -299,10 +347,11 @@ class NCOOptimizer(BaseOptimizer):
 
         # -- layer 1: optimize inside each cluster --------------------------
         intra: dict[int, pd.Series] = {}
+        fallbacks: dict[str, str] = {}
         for label, members in assignment.members.items():
             sub_mu = mu.loc[members] if mu is not None else None
-            intra[label] = self._sub_solve(
-                cov.loc[members, members], sub_mu, layer=f"cluster {label}"
+            intra[label] = self._intra_solve(
+                label, cov.loc[members, members], sub_mu, fallbacks
             )
 
         # -- collapse each cluster into one synthetic asset -----------------
@@ -322,14 +371,41 @@ class NCOOptimizer(BaseOptimizer):
         )
 
         # -- layer 2: optimize across the synthetic assets ------------------
-        inter = self._sub_solve(
-            reduced_cov, reduced_mu, layer="the inter-cluster layer"
-        )
+        try:
+            inter = self._sub_solve(
+                reduced_cov, reduced_mu, layer="the inter-cluster layer"
+            )
+        except SolverFailure as exc:
+            if exc.status != "unbounded":
+                raise
+            # The generic advice — add per-asset bounds — points at a box NCO
+            # applies only to the combined book, never inside a layer.
+            raise SolverFailure(
+                "unbounded",
+                exc.attempts,
+                detail=(
+                    "Across NCO's clusters the Sharpe ratio keeps rising as "
+                    "the book levers up: the layers are solved without the "
+                    "mandate's per-asset box, so long-short max-Sharpe has no "
+                    "finite answer here. Use objective='min_variance', run "
+                    "long-only, or force a different n_clusters."
+                ),
+            ) from exc
 
         combined = pd.Series(
             loadings.values @ inter.reindex(labels).values, index=assets
         )
         self._record_diagnostics(assignment, intra, inter, reduced_cov, cov)
+        if fallbacks:
+            self._diagnostics["nco_min_variance_fallback"] = fallbacks
+            warnings.warn(
+                f"NCO solved {len(fallbacks)} cluster(s) "
+                f"({', '.join(fallbacks)}) for minimum variance: max-Sharpe has "
+                "no answer inside them. The inter-cluster layer still weighs "
+                "them by their Sharpe ratio. Reasons are in "
+                "extras['nco_min_variance_fallback'].",
+                stacklevel=3,
+            )
 
         projected, distance = project_to_constraints(
             combined.values, assets, self.constraints

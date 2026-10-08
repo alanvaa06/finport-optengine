@@ -352,7 +352,8 @@ portfolio. It is decided over the feasible set, not asset by asset: a
 long-only box that caps the only asset above cash raises it (and says what the
 best feasible excess return is, on `exc.best_excess_return`), while a
 long-short book whose assets all trail cash does not, when a spread between
-them beats it.
+them beats it. NCO catches it inside a cluster and solves that cluster for
+minimum variance instead, naming it in `extras["nco_min_variance_fallback"]`.
 
 **`MandateViolationError`** is the fourth, and the only one raised *after* a
 successful solve. It means the answer arrived and does not comply, and you had
