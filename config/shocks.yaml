@@ -18,7 +18,12 @@
 # ``covariance_scale`` is the scenario's effect on *risk*: a scalar multiplies
 # the base covariance, so 4.0 doubles every volatility with correlations
 # unchanged. It is what lets the report say what the book's volatility becomes
-# under the scenario, not only what it loses on the day.
+# under the scenario, not only what it loses on the day. Because correlations
+# do not move, every book's volatility moves by the same √scale. To make
+# diversification fail as well, add ``correlation_shift: s``, which moves every
+# correlation s of the way to +1 and keeps every volatility (the CLI and the
+# library read it; the app's scenario grid holds the scalar only). A full
+# matrix in place of the scalar must be positive semi-definite.
 
 schema_version: 1
 
@@ -87,11 +92,12 @@ shocks:
 
   - name: Liquidity squeeze
     notes: >-
-      Every diversifier stops diversifying at once: the moves are modest but
-      they are all the same sign, gold included, because it is what can be
-      sold. Small P&L, large risk multiple — the scenario a correlation matrix
-      estimated in calm markets cannot produce.
-    covariance_scale: 6.25       # volatilities ×2.5
+      Every diversifier loses at once: the moves are modest but they are all
+      the same sign, gold included, because it is what can be sold. Small P&L,
+      large risk multiple. The risk clause scales every volatility by 2.5 and
+      leaves the estimated correlations as they are, so it does not model
+      correlations rising; a correlation_shift would.
+    covariance_scale: 6.25       # volatilities ×2.5, correlations unchanged
     returns:
       US_Equity:     -0.11
       Intl_Equity:   -0.12

@@ -8,9 +8,10 @@ of that sum, which is why the contributions add up to the scenario's P&L
 *exactly* rather than approximately.
 
 Optionally a shock also carries a stressed covariance — a scalar multiplier on
-the base matrix ("correlations and vols double") or a full replacement matrix —
-so the report can say what the book's volatility becomes under the scenario,
-not only what it loses on the day.
+the base matrix (every volatility scaled, correlations unchanged), a shift of
+every correlation toward one, or a full replacement matrix — so the report can
+say what the book's volatility becomes under the scenario, not only what it
+loses on the day.
 
 Three things this module refuses to do quietly:
 
@@ -59,8 +60,9 @@ class StressError(ValueError):
     Subclasses :class:`ValueError`, so callers already catching that keep
     working. Raised for an unnamed shock, a non-finite shock return, a
     negative covariance multiplier, a covariance that does not cover the book,
-    an asymmetric stressed covariance, a duplicate scenario name, an empty
-    shock list, and — by default — a shock on an asset the book does not hold.
+    an asymmetric or non-PSD stressed covariance, a correlation shift outside
+    ``[0, 1]``, a duplicate scenario name, an empty shock list, and — by
+    default — a shock on an asset the book does not hold.
     """
 
 
@@ -82,22 +84,37 @@ class Shock:
             says, and an unmentioned name is unmoved, not undefined.
         covariance_scale: The scenario's effect on risk, if it has one. A
             scalar multiplies the base covariance (``4.0`` doubles every
-            volatility, correlations unchanged); a mapping or frame replaces
-            it outright, in the same units as the base matrix. ``None`` leaves
-            risk at its unstressed level.
+            volatility, correlations unchanged — so every book's volatility
+            moves by the same ``√4``); a mapping or frame replaces it outright,
+            in the same units as the base matrix, and must be positive
+            semi-definite. ``None`` leaves risk at its unstressed level.
         notes: Free text — where the numbers came from, which historical
             episode they are calibrated to.
+        correlation_shift: Move every pairwise correlation this fraction of
+            the way to +1, keeping every volatility:
+            ``ρᵢⱼ' = ρᵢⱼ + s·(1 − ρᵢⱼ)``, which is
+            ``Σ' = (1 − s)·Σ + s·σσ'``. ``0`` changes nothing, ``1`` makes
+            every asset the same bet. It is what a scalar cannot say —
+            diversification failing — and it hurts the books that relied on
+            it while leaving a single-asset book alone. A blend of two valid
+            covariances, so it is always one. Applied before a scalar
+            ``covariance_scale``; refused next to a replacement matrix, which
+            already states its correlations. ``None`` leaves correlations
+            alone.
 
     Raises:
         StressError: If the name is empty, a shock return is not finite, a
-            scalar ``covariance_scale`` is negative or not finite, or a matrix
-            ``covariance_scale`` is not square and symmetric.
+            scalar ``covariance_scale`` is negative or not finite, a matrix
+            ``covariance_scale`` is not square, symmetric and positive
+            semi-definite, or ``correlation_shift`` is outside ``[0, 1]`` or
+            set next to a matrix.
     """
 
     name: str
     returns: Mapping[str, float]
     covariance_scale: CovarianceScale = None
     notes: str = ""
+    correlation_shift: float | None = None
 
     def __post_init__(self) -> None:
         """Normalize and validate the scenario as written.
@@ -131,6 +148,21 @@ class Shock:
         self.covariance_scale = _normalize_covariance_scale(
             self.name, self.covariance_scale
         )
+        if self.correlation_shift is not None:
+            shift = float(self.correlation_shift)
+            if not 0.0 <= shift <= 1.0:
+                raise StressError(
+                    f"Shock {self.name!r}: correlation_shift is the fraction of the "
+                    f"way every correlation moves to +1, so it lies in [0, 1]; got "
+                    f"{self.correlation_shift!r}."
+                )
+            if isinstance(self.covariance_scale, pd.DataFrame):
+                raise StressError(
+                    f"Shock {self.name!r}: a replacement covariance already states "
+                    "its correlations, so a correlation_shift on top of it would "
+                    "contradict it. Use one or the other."
+                )
+            self.correlation_shift = shift
 
     @property
     def assets(self) -> tuple[str, ...]:
@@ -177,16 +209,18 @@ class Shock:
                 caller is working in.
 
         Returns:
-            The base matrix when the shock carries no ``covariance_scale``,
-            ``scale × base`` for a scalar, or the shock's own matrix reindexed
-            onto the base matrix's assets. Same units as ``cov_matrix``.
+            The base matrix when the shock carries no risk clause, the shock's
+            own matrix reindexed onto the base matrix's assets, or the base
+            with its correlations shifted (``correlation_shift``) and then
+            multiplied by a scalar ``covariance_scale``. Same units as
+            ``cov_matrix``.
 
         Raises:
             StressError: If a matrix ``covariance_scale`` does not cover every
                 asset in ``cov_matrix``.
         """
         scale = self.covariance_scale
-        if scale is None:
+        if scale is None and self.correlation_shift is None:
             return cov_matrix
         if isinstance(scale, pd.DataFrame):
             assets = list(cov_matrix.columns)
@@ -198,9 +232,19 @@ class Shock:
                     "missing risk, not zero risk."
                 )
             return scale.loc[assets, assets].astype(float)
+        stressed = cov_matrix
+        if self.correlation_shift is not None:
+            # (1 − s)·ρσσ + s·σσ keeps the diagonal and moves each correlation
+            # s of the way to one; no division, so a zero-volatility asset
+            # (cash) stays at zero rather than becoming a NaN.
+            vols = np.sqrt(np.clip(np.diag(cov_matrix.to_numpy(dtype=float)), 0.0, None))
+            s = float(self.correlation_shift)
+            stressed = (1.0 - s) * cov_matrix + s * pd.DataFrame(
+                np.outer(vols, vols), index=cov_matrix.index, columns=cov_matrix.columns
+            )
         # Everything that is neither None nor a frame was normalized to a
         # scalar by ``__post_init__``; a mapping never survives it.
-        return cov_matrix * cast(float, scale)
+        return stressed if scale is None else stressed * cast(float, scale)
 
     def to_dict(self) -> dict[str, Any]:
         """This scenario as a plain, YAML- and JSON-serializable mapping.
@@ -208,8 +252,9 @@ class Shock:
         Returns:
             ``name``, ``returns`` (``asset -> one-period return``), ``notes``,
             and ``covariance_scale`` — a float, a nested ``asset -> asset ->
-            covariance`` mapping, or ``None``. Round-trips through
-            :meth:`from_dict`.
+            covariance`` mapping, or ``None`` — plus ``correlation_shift`` when
+            one is set, so a shock without one serializes exactly as it always
+            did. Round-trips through :meth:`from_dict`.
         """
         scale: Any = self.covariance_scale
         if isinstance(scale, pd.DataFrame):
@@ -219,20 +264,24 @@ class Shock:
             }
         elif scale is not None:
             scale = float(scale)
-        return {
+        out: dict[str, Any] = {
             "name": self.name,
             "returns": {str(k): float(v) for k, v in self.returns.items()},
             "covariance_scale": scale,
             "notes": self.notes,
         }
+        if self.correlation_shift is not None:
+            out["correlation_shift"] = float(self.correlation_shift)
+        return out
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Shock:
         """Rebuild a scenario from its serialized form.
 
         Args:
-            data: A mapping as produced by :meth:`to_dict`. ``covariance_scale``
-                and ``notes`` are optional; ``name`` and ``returns`` are not.
+            data: A mapping as produced by :meth:`to_dict`. ``covariance_scale``,
+                ``correlation_shift`` and ``notes`` are optional; ``name`` and
+                ``returns`` are not.
 
         Returns:
             The :class:`Shock`.
@@ -246,11 +295,14 @@ class Shock:
             raise StressError(
                 f"A shock is written as a mapping; got {type(data).__name__}."
             )
-        unknown = sorted(set(data) - {"name", "returns", "covariance_scale", "notes"})
+        unknown = sorted(
+            set(data)
+            - {"name", "returns", "covariance_scale", "correlation_shift", "notes"}
+        )
         if unknown:
             raise StressError(
                 f"Unknown shock key(s): {', '.join(unknown)}. Known keys: "
-                "covariance_scale, name, notes, returns."
+                "correlation_shift, covariance_scale, name, notes, returns."
             )
         if "name" not in data:
             raise StressError("A shock entry is missing required key 'name'.")
@@ -263,6 +315,7 @@ class Shock:
             returns=dict(data["returns"] or {}),
             covariance_scale=data.get("covariance_scale"),
             notes=str(data.get("notes") or ""),
+            correlation_shift=data.get("correlation_shift"),
         )
 
     def describe(self) -> str:
@@ -281,6 +334,8 @@ class Shock:
             risk = "; covariance replaced"
         elif self.covariance_scale is not None:
             risk = f"; covariance ×{cast(float, self.covariance_scale):.2f}"
+        if self.correlation_shift is not None:
+            risk += f"; correlations {self.correlation_shift:.0%} of the way to 1"
         tail = f" — {self.notes}" if self.notes else ""
         return f"{self.name}: {moves or 'no shocks'}{risk}{tail}"
 
@@ -662,7 +717,7 @@ def _normalize_covariance_scale(name: str, scale: CovarianceScale) -> Covariance
     Raises:
         StressError: If a scalar is negative or not finite, or a matrix is not
             square, has mismatched labels, carries a non-finite entry, or is
-            not symmetric.
+            not symmetric and positive semi-definite.
     """
     if scale is None:
         return None
@@ -711,6 +766,20 @@ def _normalize_covariance_scale(name: str, scale: CovarianceScale) -> Covariance
         raise StressError(
             f"Shock {name!r}: the stressed covariance is not symmetric. "
             "Cov(a,b) and Cov(b,a) are the same number."
+        )
+    # Checked here, where the matrix is written, and not only per book in
+    # ``_portfolio_volatility``: a book that happens not to load on the
+    # negative eigenvector gets a plausible volatility out of a matrix that is
+    # not a covariance. A hand-typed crisis correlation is the usual culprit.
+    eigenvalues = np.linalg.eigvalsh(values)
+    tolerance = 1e-10 * max(1.0, float(np.abs(eigenvalues).max()))
+    if float(eigenvalues.min()) < -tolerance:
+        raise StressError(
+            f"Shock {name!r}: the stressed covariance is not positive "
+            f"semi-definite — its smallest eigenvalue is {eigenvalues.min():.3g}, "
+            "so some book would have a negative variance. Repair it (for "
+            "instance with nearest_psd), or express a correlation breakdown "
+            "as a correlation_shift, which is valid by construction."
         )
     return matrix
 
