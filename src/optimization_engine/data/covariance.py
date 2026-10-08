@@ -639,8 +639,9 @@ def expected_returns_from_history(
       ``r̄ · periods_per_year``.
     * ``geometric_mean`` — annualized compound growth rate,
       ``(∏(1+r))^(ppy/T) − 1``.
-    * ``ema``            — exponentially-weighted mean with the given
-      ``span``.
+    * ``ema``            — exponentially-weighted arithmetic mean with the
+      given ``span``, weights normalized over the window, annualized as
+      ``ema · periods_per_year`` like ``mean``.
     * ``capm``           — implied returns from a single-factor CAPM where
       the market portfolio is approximated by ``market_weights`` (defaulting
       to equal weights).
@@ -689,8 +690,13 @@ def expected_returns_from_history(
     if method == "geometric_mean":
         return ((1 + returns).prod() ** (periods_per_year / len(returns))) - 1
     if method == "ema":
-        ema = returns.ewm(span=span, adjust=False).mean().iloc[-1]
-        return (1 + ema) ** periods_per_year - 1
+        # ``adjust=True`` normalizes the weights over the window. The
+        # recursive form (``adjust=False``) seeds itself with the first row and
+        # leaves it all the weight the decay has not yet handed on —
+        # ``(1 − α)^(T−1)``, 0.774 on two years of months at the default span.
+        # Annualized as ``mean`` is, for the same single-period reason.
+        ema = returns.ewm(span=span, adjust=True).mean().iloc[-1]
+        return ema * periods_per_year
     if method == "shrunk_mean":
         raw = expected_returns_from_history(
             returns, method="mean", periods_per_year=periods_per_year
