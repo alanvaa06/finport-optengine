@@ -748,3 +748,67 @@ def test_run_engine_diagnoses_the_covariance_before_repairing_it(monkeypatch):
     assert any("not positive semi-definite" in w for w in diagnostics.warnings)
     # The matrix the run carries, and solved against, is the repaired one.
     assert np.linalg.eigvalsh(run.cov_matrix.to_numpy()).min() > -1e-10
+
+
+# ---------------------------------------------------------------------------
+# 12. A workbook that leaves a sheet out says which, and why
+# ---------------------------------------------------------------------------
+#
+# run_sheets caught the relative-performance failure and dropped the
+# performance sheets, and dropped the out-of-sample ones with a bare
+# ``except (ValueError, KeyError): pass``. The workbook looked complete.
+
+
+@pytest.fixture()
+def benchmarked_run():
+    from optimization_engine.benchmark import BenchmarkSpec
+    from optimization_engine.data.loader import prices_to_returns, sample_dataset
+    from optimization_engine.engine import run_engine
+
+    returns = prices_to_returns(sample_dataset(n_periods=600, seed=11))
+    config = EngineConfig(
+        optimizer=OptimizerSpec(name="equal_weight"),
+        benchmark=BenchmarkSpec(kind="equal_weight"),
+    )
+    return run_engine(returns, config)
+
+
+def test_a_dropped_performance_report_is_recorded(benchmarked_run, monkeypatch):
+    from optimization_engine.reporting.exporters import run_sheets
+
+    def no_overlap(*args, **kwargs):
+        raise ValueError("The portfolio and the benchmark share no dates")
+
+    monkeypatch.setattr(benchmarked_run, "performance", no_overlap)
+    with pytest.warns(UserWarning, match="share no dates"):
+        sheets = run_sheets(benchmarked_run)
+    notes = sheets["omitted_sheets"]
+    assert "performance" in " ".join(notes["sheets"])
+    assert notes["reason"].str.contains("share no dates").any()
+
+
+def test_a_dropped_out_of_sample_report_is_recorded(benchmarked_run, monkeypatch):
+    from optimization_engine.reporting.exporters import run_sheets
+
+    walk = benchmarked_run.walk_forward(lookback=252, rebalance_every=126)
+    performance = benchmarked_run.performance()
+    real = benchmarked_run.performance
+
+    def refuse_the_override(*args, **kwargs):
+        if kwargs.get("returns_override") is not None:
+            raise KeyError("walk-forward dates missing from the benchmark")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(benchmarked_run, "performance", refuse_the_override)
+    with pytest.warns(UserWarning, match="walk-forward dates missing"):
+        sheets = run_sheets(benchmarked_run, walk_forward=walk, performance=performance)
+    assert not any(name.startswith("oos_") for name in sheets)
+    notes = sheets["omitted_sheets"]
+    assert "oos_" in " ".join(notes["sheets"])
+    assert notes["reason"].str.contains("walk-forward dates missing").any()
+
+
+def test_a_complete_workbook_carries_no_omission_sheet(benchmarked_run):
+    from optimization_engine.reporting.exporters import run_sheets
+
+    assert "omitted_sheets" not in run_sheets(benchmarked_run)
