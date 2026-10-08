@@ -514,13 +514,16 @@ def load_config(path: str | Path) -> EngineConfig:
         BenchmarkError: If the benchmark block is malformed.
     """
     p = Path(path)
+    # The extension first: reading before checking it loaded any file the
+    # path named — a key, a multi-gigabyte dump — only to refuse it.
+    suffix = p.suffix.lower()
+    if suffix not in {".yaml", ".yml", ".json"}:
+        raise ValueError(f"Unsupported config extension: {p.suffix}")
     text = p.read_text(encoding="utf-8")
-    if p.suffix.lower() in {".yaml", ".yml"}:
-        data = yaml.safe_load(text) or {}
-    elif p.suffix.lower() == ".json":
+    if suffix == ".json":
         data = json.loads(text)
     else:
-        raise ValueError(f"Unsupported config extension: {p.suffix}")
+        data = yaml.safe_load(text) or {}
     return EngineConfig.from_dict(data)
 
 

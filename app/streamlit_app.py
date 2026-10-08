@@ -127,6 +127,7 @@ from optimization_engine.optimizers.factory import (  # noqa: E402
 from optimization_engine.optimizers.feasibility import analyze_feasibility  # noqa: E402
 from optimization_engine.optimizers.requirements import requirements_for  # noqa: E402
 from optimization_engine.reporting.exporters import (  # noqa: E402
+    excel_writer,
     performance_sheets,
     run_sheets,
     unique_sheet_name,
@@ -182,7 +183,6 @@ from optimization_engine.universe import (  # noqa: E402
     UniverseError,
     UniverseRules,
     count_unresolved,
-    load_universe_rules,
 )
 
 # ---------------------------------------------------------------------------
@@ -2867,6 +2867,20 @@ def _universe_cached(rules_text: str, base_dir: str, returns_hash: str, _returns
     if document is None:
         raise UniverseError("The rules document is empty.")
     rules = UniverseRules.from_dict(document, base_dir=Path(base_dir))
+    if rules.panels:
+        # A `panels:` entry is a path on the machine running this page, and
+        # `streamlit run` listens on every interface: honouring it would let
+        # anyone who can reach the page have the server read a file of their
+        # choosing, with the parse error quoting what it found. The page
+        # supplies `returns` and `prices`; a screen over a characteristic
+        # panel runs from `optengine backtest --universe`, where the operator
+        # names the files.
+        raise UniverseError(
+            "This page does not read panels from disk, so a rules document "
+            f"here cannot declare 'panels:' ({', '.join(p.name for p in rules.panels)}). "
+            "Screen on the run's own `returns` or `prices`, or run the file "
+            "with `optengine backtest --universe`."
+        )
     return rules, rules.build(returns=_returns, prices=_prices)
 
 
@@ -2891,39 +2905,25 @@ with tab_universe:
             _UNIVERSE_EXAMPLE.parent if _UNIVERSE_EXAMPLE.exists() else ROOT
         )
 
-    path_col, load_col = st.columns([4, 1], vertical_alignment="bottom")
-    with path_col:
-        rules_path = st.text_input(
-            "Rules file on disk",
-            value=str(_UNIVERSE_EXAMPLE),
-            key="universe_rules_path",
-            help=(
-                "Loaded through the library's own reader, which validates the "
-                "whole document before touching any data — and resolves a "
-                "characteristic panel's relative path against *this file's* "
-                "directory, which is the one thing an uploaded copy cannot do."
-            ),
+    # No path box. A free-text "Rules file on disk" read any file the server
+    # could see, for anyone who could reach the page — `streamlit run` listens
+    # on every interface — and the parse error quoted what it found. The
+    # shipped example is one click away and anything else comes in through
+    # the uploader, which never names a server path: the same reasoning that
+    # keeps the `file` provider out of the Data tab (`data_sources.py`).
+    if _UNIVERSE_EXAMPLE.exists() and st.button(
+        "Load the example rules",
+        key="universe_load_example",
+        help=(
+            "Replace the box below with config/universe.yaml — the volatility "
+            "band with hysteresis the README walks through."
+        ),
+    ):
+        st.session_state["universe_rules_text"] = _UNIVERSE_EXAMPLE.read_text(
+            encoding="utf-8"
         )
-    with load_col:
-        load_rules_clicked = st.button(
-            "Load", key="universe_load_path", width="stretch"
-        )
-    if load_rules_clicked:
-        try:
-            loaded_rules = load_universe_rules(rules_path)
-        except (UniverseError, OSError) as exc:
-            st.error(f"Could not read {rules_path}: {exc}")
-        else:
-            st.session_state["universe_rules_text"] = Path(rules_path).read_text(
-                encoding="utf-8"
-            )
-            st.session_state["universe_rules_base"] = str(
-                Path(rules_path).resolve().parent
-            )
-            st.success(
-                f"Loaded {len(loaded_rules.rules)} rule(s) from {rules_path}."
-            )
-            st.rerun()
+        st.session_state["universe_rules_base"] = str(_UNIVERSE_EXAMPLE.parent)
+        st.rerun()
 
     rules_file = st.file_uploader(
         "⬆ Rules file (YAML/JSON)",
@@ -3217,7 +3217,7 @@ def _performance_downloads(report, key_prefix: str) -> None:
     left, right = st.columns(2)
     buf = io.BytesIO()
     frames = performance_sheets(report)
-    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+    with excel_writer(buf) as writer:
         for name, frame in frames.items():
             frame.to_excel(writer, sheet_name=name[:31], index=True)
     buf.seek(0)
@@ -4175,7 +4175,7 @@ with tab_report:
         # truncate onto each other, so the shared de-duplicating writer is
         # used rather than a bare slice that would silently drop a sheet.
         _used: set[str] = set()
-        with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+        with excel_writer(buf) as writer:
             for name, df in sheets.items():
                 if df is None:
                     continue

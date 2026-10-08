@@ -394,3 +394,50 @@ def test_an_unknown_run_panel_is_refused(returns):
     )
     with pytest.raises(UniverseError, match="Unknown run panel"):
         rules.build(returns=returns, volumes=returns)
+
+
+# ---------------------------------------------------------------------------
+# What the loader reads before it knows the file is a rules document
+# ---------------------------------------------------------------------------
+
+
+def test_a_file_without_a_rules_extension_is_not_read(tmp_path, monkeypatch):
+    """The suffix used to be consulted only to choose a parser, after the read.
+
+    Anything that was not ``.json`` went to the YAML parser, so an
+    extensionless credentials file was read whole and its second line came
+    back inside the parse error.
+    """
+    credentials = tmp_path / "credentials"
+    credentials.write_text("[default]\naws_access_key_id = AKIASECRETID\n")
+    reads = []
+    original = Path.read_text
+
+    def spy(self, *args, **kwargs):
+        reads.append(self)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", spy)
+    with pytest.raises(UniverseError, match=r"\.yaml"):
+        load_universe_rules(credentials)
+    assert reads == []
+
+
+def test_a_parse_error_gives_the_position_not_the_text(tmp_path):
+    path = tmp_path / "rules.yaml"
+    path.write_text("rules:\n  aws_secret: AKIA_SECRET\n broken: [SECRET_LINE\n")
+    with pytest.raises(UniverseError) as excinfo:
+        load_universe_rules(path)
+    message = str(excinfo.value)
+    assert "SECRET" not in message
+    assert "line" in message
+
+
+def test_an_oversized_rules_file_is_not_read(tmp_path, monkeypatch):
+    import optimization_engine.universe.rules as rules_module
+
+    path = tmp_path / "rules.yaml"
+    path.write_text("rules: []\n" + "# padding\n" * 50)
+    monkeypatch.setattr(rules_module, "MAX_RULES_BYTES", 64)
+    with pytest.raises(UniverseError, match="bytes"):
+        load_universe_rules(path)
