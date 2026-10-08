@@ -9,7 +9,7 @@ description = "Multi-asset portfolio optimization engine with mean-variance, ris
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.9"
-authors = [{ name = "Alan Vazquez" }]
+authors = [{ name = "Alan Vazquez" }, { name = "Eduardo Ramos, CFA" }]
 keywords = ["portfolio", "optimization", "finance", "quant", "risk-parity", "black-litterman", "hrp", "cvar"]
 classifiers = [
     "Programming Language :: Python :: 3",
