@@ -391,3 +391,32 @@ def test_a_constant_candidate_no_longer_decides_the_pbo():
     # Scored like the exactly-zero-variance candidate it is, not as a winner.
     assert pbo == pytest.approx(probability_of_backtest_overfitting(with_zeros, 8).pbo)
     assert pbo > 0.0
+
+
+# ---------------------------------------------------------------------------
+# 4. Active risk counts the names only the benchmark holds
+# ---------------------------------------------------------------------------
+#
+# active_risk_decomposition kept only the assets in ``weights``. A book that
+# lists its holdings and omits what it does not hold lost every
+# benchmark-only name: {A: .5, B: .5} against equal-weight A/B/C reported a
+# 4.71% tracking error against a true 8.16%.
+
+
+def test_active_risk_includes_benchmark_only_names():
+    from optimization_engine.analytics.active import active_risk_decomposition
+
+    cov = pd.DataFrame(np.diag([0.04] * 3), index=list("ABC"), columns=list("ABC"))
+    book = pd.Series({"A": 0.5, "B": 0.5})
+    bench = pd.Series({"A": 1 / 3, "B": 1 / 3, "C": 1 / 3})
+    active = np.array([0.5 - 1 / 3, 0.5 - 1 / 3, -1 / 3])
+    true_te = float(np.sqrt(active @ cov.to_numpy() @ active))
+
+    decomposition = active_risk_decomposition(book, bench, cov)
+    assert list(decomposition.index) == list("ABC")
+    assert float(decomposition["contribution"].sum()) == pytest.approx(true_te)
+    assert decomposition.loc["C", "weight"] == 0.0
+    assert decomposition.loc["C", "active_weight"] == pytest.approx(-1 / 3)
+
+    explicit = active_risk_decomposition(book.reindex(list("ABC")).fillna(0.0), bench, cov)
+    pd.testing.assert_frame_equal(decomposition, explicit)
