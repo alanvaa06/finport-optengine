@@ -36,15 +36,15 @@ overfitting, minimum track record length).
 
 ## Docs
 
-- [AGENTS.md](https://github.com/alanvaa06/Optimization_Engine/blob/main/AGENTS.md): API map, the `--json` CLI contract, and the mistakes that cost real debugging time — start here
-- [README](https://github.com/alanvaa06/Optimization_Engine/blob/main/README.md): the five questions the engine answers, with figures
-- [ERRORS.md](https://github.com/alanvaa06/Optimization_Engine/blob/main/docs/ERRORS.md): every exception the library raises on purpose, which to catch, the CLI's exit codes, and what is reported rather than raised
-- [RESEARCH.md](https://github.com/alanvaa06/Optimization_Engine/blob/main/docs/RESEARCH.md): the literature behind each method, and what was deliberately left out
-- [CHANGELOG.md](https://github.com/alanvaa06/Optimization_Engine/blob/main/CHANGELOG.md): what changed, and what to do about it
+- [AGENTS.md](https://github.com/alanvaa06/finport-optengine/blob/main/AGENTS.md): API map, the `--json` CLI contract, and the mistakes that cost real debugging time — start here
+- [README](https://github.com/alanvaa06/finport-optengine/blob/main/README.md): the five questions the engine answers, with figures
+- [ERRORS.md](https://github.com/alanvaa06/finport-optengine/blob/main/docs/ERRORS.md): every exception the library raises on purpose, which to catch, the CLI's exit codes, and what is reported rather than raised
+- [RESEARCH.md](https://github.com/alanvaa06/finport-optengine/blob/main/docs/RESEARCH.md): the literature behind each method, and what was deliberately left out
+- [CHANGELOG.md](https://github.com/alanvaa06/finport-optengine/blob/main/CHANGELOG.md): what changed, and what to do about it
 
 ## Optional
 
-- [RELEASING.md](https://github.com/alanvaa06/Optimization_Engine/blob/main/docs/RELEASING.md): Trusted Publishing setup and the release procedure
+- [RELEASING.md](https://github.com/alanvaa06/finport-optengine/blob/main/docs/RELEASING.md): Trusted Publishing setup and the release procedure
 - [PyPI](https://pypi.org/project/finport-optengine/): released versions
-- [Example config](https://github.com/alanvaa06/Optimization_Engine/blob/main/config/example_multi_asset.yaml): a working multi-asset mandate
+- [Example config](https://github.com/alanvaa06/finport-optengine/blob/main/config/example_multi_asset.yaml): a working multi-asset mandate
 - API reference: generated from the docstrings by `scripts/build_api_docs.py` and published to GitHub Pages from `main`. Every exported name with its signature, parameters, units and errors.

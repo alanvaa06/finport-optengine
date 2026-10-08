@@ -153,3 +153,27 @@ def test_stress_is_a_key_the_loader_knows_and_validates():
                 {"name": "gap", "returns": {"A": -0.2}},
             ]
         )
+
+
+def test_an_unsupported_extension_is_refused_before_the_file_is_read(
+    tmp_path, monkeypatch
+):
+    """The extension is checked first, so a key file is never read into memory.
+
+    ``load_config`` read the whole file and only then looked at the suffix:
+    any file reachable by path was read in full — a large one at the cost of
+    memory — before being refused.
+    """
+    key = tmp_path / "id_rsa"
+    key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\n")
+    reads = []
+    original = Path.read_text
+
+    def spy(self, *args, **kwargs):
+        reads.append(self)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", spy)
+    with pytest.raises(ValueError, match="Unsupported config extension"):
+        load_config(key)
+    assert reads == []
