@@ -110,6 +110,11 @@ class MeanVarianceOptimizer(BaseOptimizer):
         #: without calling ``_mu_vector()`` a second time — it warns about
         #: missing entries, and it should warn once per solve, not twice.
         self._solved_mu: np.ndarray | None = None
+        #: The covariance a tracking-error budget is measured on, when it is
+        #: not the one being optimized. Black-Litterman sets it: its sub-solve
+        #: optimizes against the posterior ``Σ + M``, but active risk is
+        #: measured on ``Σ`` by every other method and by the audit.
+        self._tracking_cov: pd.DataFrame | None = None
         if self.risk_aversion < 0:
             raise ValueError(
                 f"risk_aversion must be non-negative; got {risk_aversion}. "
@@ -153,8 +158,14 @@ class MeanVarianceOptimizer(BaseOptimizer):
             objective = cp.Maximize(mu @ w - self.risk_aversion * cp.quad_form(w, sigma_psd))
             extra = []
 
+        tracking = sigma
+        if self._tracking_cov is not None:
+            tracking = (
+                self._tracking_cov.reindex(index=self.assets, columns=self.assets)
+                .to_numpy(dtype=float)
+            )
         cons = build_constraints(
-            w, self.assets, self.constraints, extra, cov_matrix=sigma
+            w, self.assets, self.constraints, extra, cov_matrix=tracking
         )
         problem = cp.Problem(objective, cons)
         info = solve_problem(problem)

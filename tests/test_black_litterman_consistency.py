@@ -95,3 +95,32 @@ def test_a_target_the_solve_reaches_is_not_called_unreachable(history):
 
     assert run.feasibility.is_feasible, run.feasibility.describe()
     assert run.result.expected_return == pytest.approx(target, abs=1e-6)
+
+
+def test_black_litterman_binds_a_tracking_error_budget_against_sigma(history, caplog):
+    """The registry said the limit was not imposed; the solve imposed it on Σ + M.
+
+    The sub-solve handed the mandate to a mean-variance optimizer built on the
+    posterior covariance, so the 1% budget was measured on ``Σ + M`` — tighter
+    than the ``Σ`` the audit and every other method measure it on. The book
+    came back at 0.98% against ``Σ``, inside the limit but not at it, while the
+    factory warned that the limit "will be reported ... but not enforced".
+    """
+    from optimization_engine.optimizers.requirements import requirements_for
+
+    equal = {a: 1.0 / len(NAMES) for a in NAMES}
+    cfg = EngineConfig(
+        optimizer=OptimizerSpec(name="black_litterman", bl_views={"c": 0.30}),
+        benchmark_weights=equal,
+        max_tracking_error=0.01,
+        covariance_method="sample",
+    )
+    with caplog.at_level("WARNING"):
+        run = run_engine(history, cfg)
+
+    assert requirements_for("black_litterman").supports_benchmark_limits
+    assert not [r for r in caplog.records if "cannot impose" in r.getMessage()]
+    active = run.result.weights.values - np.array([equal[a] for a in NAMES])
+    tracking_error = float(np.sqrt(active @ run.cov_matrix.values @ active))
+    assert tracking_error == pytest.approx(0.01, abs=1e-5), "the budget binds on Σ"
+    assert run.result.audit.is_clean, run.result.audit.describe()

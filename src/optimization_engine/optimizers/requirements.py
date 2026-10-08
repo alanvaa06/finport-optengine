@@ -379,6 +379,9 @@ REQUIREMENTS: dict[str, MethodRequirements] = {
     ),
     "black_litterman": MethodRequirements(
         name="black_litterman",
+        # Its sub-solve is mean-variance, which puts the budget in the convex
+        # program — measured on the prior Σ, like the audit.
+        supports_benchmark_limits=True,
         label="Black-Litterman",
         requires_mu=False, requires_cov=True, requires_returns=False,
         supports_target_return=True, supports_target_volatility=True,

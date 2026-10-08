@@ -30,7 +30,7 @@ from optimization_engine.optimizers.naive import (
     InverseVolatilityOptimizer,
 )
 from optimization_engine.optimizers.nco import NCOOptimizer
-from optimization_engine.optimizers.requirements import requirements_for
+from optimization_engine.optimizers.requirements import REQUIREMENTS, requirements_for
 from optimization_engine.optimizers.risk_parity import RiskParityOptimizer
 
 _LOG = logging.getLogger(__name__)
@@ -187,12 +187,17 @@ def validate_benchmark_constraints(
             "investable universe and cannot bound active risk."
         )
     if has_limits and not req.supports_benchmark_limits:
+        # The alternatives are read off the registry rather than written out,
+        # so the advice cannot fall behind which methods actually bind.
+        binding = sorted(
+            name for name, entry in REQUIREMENTS.items() if entry.supports_benchmark_limits
+        )
         _LOG.warning(
             "Optimizer '%s' cannot impose a tracking-error or active-share "
             "budget inside its solve; the limit will be reported in the "
-            "compliance panel but not enforced. Use mean_variance, "
-            "min_variance or active_mean_variance to bind it.",
+            "compliance panel but not enforced. These methods bind it: %s.",
             spec.name,
+            ", ".join(binding),
         )
 
 

@@ -602,7 +602,14 @@ class BlackLittermanOptimizer(BaseOptimizer):
             risk_free_rate=self.risk_free_rate,
             risk_aversion=delta / 2.0,
         )
-        result = sub_optimizer.optimize()
+        # Active risk is measured on the prior Σ, as every other method and
+        # the audit of this result measure it — not on the posterior Σ + M the
+        # sub-solve optimizes against, which made the budget tighter than the
+        # one set. The sub-solve's own post-solve pass would audit against
+        # Σ + M for the same reason, so it is skipped: this optimizer audits
+        # the weights it returns against Σ.
+        sub_optimizer._tracking_cov = self.cov_matrix
+        result = sub_optimizer.optimize(run_post_solve_diagnostics=False)
         self._diagnostics.update(
             {
                 k: v
