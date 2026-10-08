@@ -579,3 +579,74 @@ def test_annualize_returns_is_nan_without_observations():
     # The aggregation summary_stats builds its "Annualized Return" from.
     aggregated = frame.aggregate(annualize_returns, periods_per_year=PPY)
     assert np.isnan(aggregated["empty"])
+
+
+# ---------------------------------------------------------------------------
+# 9. The base configuration is a trial too, when the grid does not contain it
+# ---------------------------------------------------------------------------
+#
+# The CLI deflates the headline run — the base config — against the sweep.
+# With base risk_parity and --sweep optimizer.name=min_variance,hrp it used
+# N = 2 against a dispersion that left the headline out; three were tried.
+
+
+def _grid_around(base_name: str, names: list[str]):
+    rng = np.random.default_rng(9)
+    idx = _days(600)
+    streams = {
+        name: pd.Series(rng.normal(0.0003, 0.01, 600), index=idx, name=name)
+        for name in ("risk_parity", "min_variance", "hrp", "equal_weight")
+    }
+    base = EngineConfig(optimizer=OptimizerSpec(name=base_name))
+    results = run_sweep(
+        base,
+        SweepSpec(params={"optimizer.name": names}),
+        lambda cfg: streams[cfg.optimizer.name],
+        periods_per_year=PPY,
+    )
+    return results, streams
+
+
+def test_a_base_outside_the_grid_is_counted_and_measured():
+    from optimization_engine.analytics.performance import sharpe_ratio
+
+    results, streams = _grid_around("risk_parity", ["min_variance", "hrp"])
+    assert not results.base_is_cell()
+
+    n_trials, sharpes = results.trials_with_base(streams["risk_parity"])
+    assert n_trials == 3
+    assert list(sharpes.index) == ["0", "1", "base"]
+    assert sharpes["base"] == pytest.approx(
+        sharpe_ratio(streams["risk_parity"], 0.0, PPY)
+    )
+    pd.testing.assert_series_equal(sharpes.drop("base"), results.trial_sharpes())
+
+
+def test_a_base_inside_the_grid_is_not_counted_twice():
+    results, streams = _grid_around("risk_parity", ["min_variance", "risk_parity"])
+    assert results.base_is_cell()
+
+    n_trials, sharpes = results.trials_with_base(streams["risk_parity"])
+    assert n_trials == results.n_cells == 2
+    pd.testing.assert_series_equal(sharpes, results.trial_sharpes())
+
+
+def test_the_cli_deflates_the_headline_run_against_every_trial(tmp_path, capsys):
+    import yaml
+
+    from optimization_engine.cli import main
+
+    config = yaml.safe_load((ROOT / "config" / "example_multi_asset.yaml").read_text())
+    assert config["optimizer"]["name"] not in ("min_variance", "equal_weight")
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(config))
+    argv = [
+        "backtest", "--config", str(path), "--sample",
+        "--lookback", "252", "--rebalance-every", "252",
+        "--commission-bps", "10",
+        "--sweep", "optimizer.name=min_variance,equal_weight",
+    ]
+    assert main(argv) == 0
+    out = capsys.readouterr().out
+    assert "2 cells" in out
+    assert "Across 3 trial(s)" in out
