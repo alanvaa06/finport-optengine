@@ -48,6 +48,7 @@ import shutil
 import tempfile
 import time
 import zipfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -92,6 +93,10 @@ class CacheEntry:
     path: Path
     age_seconds: float
     fields: tuple[str, ...]
+    #: Run-level notes the fetch that wrote the entry attached to it — a
+    #: series whose currency was never declared is still undeclared on a
+    #: warm run, and saying so only on the cold one hid it for the TTL.
+    notes: tuple[str, ...] = ()
 
     @property
     def age_label(self) -> str:
@@ -210,9 +215,10 @@ class PanelCache:
             path=path,
             age_seconds=age,
             fields=tuple(manifest["fields"]),
+            notes=tuple(str(note) for note in manifest.get("notes", ())),
         )
 
-    def store(self, key: str, panel: PricePanel) -> bool:
+    def store(self, key: str, panel: PricePanel, notes: Sequence[str] = ()) -> bool:
         """Write a panel to the cache. Returns whether the entry is in place.
 
         The entry is built under a temporary name in the same directory — so
@@ -231,6 +237,8 @@ class PanelCache:
         Args:
             key: The request fingerprint to file it under.
             panel: The panel to write.
+            notes: Run-level warnings about the panel itself, returned with it
+                on every hit as :attr:`CacheEntry.notes`.
 
         Returns:
             ``True`` when an entry for ``key`` is on disk afterwards, whether
@@ -250,7 +258,7 @@ class PanelCache:
             )
             with os.fdopen(handle, "wb") as raw:
                 handle = -1  # now owned by the file object
-                self._write_archive(raw, panel)
+                self._write_archive(raw, panel, notes)
 
             # One atomic step. A concurrent writer of the same key simply
             # wins; a reader holding the old file keeps reading it. On
@@ -310,7 +318,7 @@ class PanelCache:
                     os.unlink(staging)
 
     @staticmethod
-    def _write_archive(stream, panel: PricePanel) -> None:
+    def _write_archive(stream, panel: PricePanel, notes: Sequence[str] = ()) -> None:
         """Serialize a panel into an open binary stream as a Zip.
 
         The index is stored once, as nanoseconds since the epoch, because every
@@ -340,6 +348,7 @@ class PanelCache:
                 }
                 for identifier, record in panel.meta.items()
             },
+            "notes": [str(note) for note in notes],
         }
         with zipfile.ZipFile(stream, "w", compression=_COMPRESSION) as archive:
             archive.writestr(_MANIFEST, json.dumps(manifest))

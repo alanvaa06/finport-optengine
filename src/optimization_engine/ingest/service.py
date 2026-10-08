@@ -238,6 +238,9 @@ def ingest(
             cache_warnings.extend(
                 _translation_notes(source.name, unsupported, duplicates)
             )
+            # What the fetch said about the panel itself — an undeclared
+            # currency, a conversion — is as true of the cached copy.
+            cache_warnings.extend(entry.notes)
             cache_warnings.extend(_volume_notes(panel, request))
             outcomes = _outcomes_from_panel(
                 panel, request, symbol_by_identifier, unsupported, None, duplicates
@@ -275,10 +278,12 @@ def ingest(
     panel = _reorder(panel, request.identifiers)
 
     fx_degraded = False
+    panel_notes: list[str] = []
     if request.currency:
         panel, currency_note, fx_degraded = _convert_currency(panel, request.currency)
         if currency_note:
             warnings.append(currency_note)
+            panel_notes.append(currency_note)
 
     warnings.extend(_volume_notes(panel, request))
     outcomes = _outcomes_from_panel(
@@ -296,7 +301,7 @@ def ingest(
         if not_cached:
             warnings.append(f"Not cached: {not_cached}")
         else:
-            cache.store(cache_key, panel)
+            cache.store(cache_key, panel, notes=panel_notes)
 
     return IngestResult(
         panel=panel,

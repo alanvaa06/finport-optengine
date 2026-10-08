@@ -765,7 +765,7 @@ def test_an_interrupted_write_leaves_nothing_a_later_run_would_trust(
 ):
     cache = PanelCache(tmp_path)
 
-    def explode(stream, panel):
+    def explode(stream, panel, *_):
         # Fail partway through serialization, once the temporary file exists.
         stream.write(b"partial")
         raise OSError("disk full")
@@ -944,3 +944,27 @@ def test_provider_options_are_part_of_the_cache_key(tmp_path):
     assert not first.from_cache
     assert not other.from_cache  # a different file is different data
     assert same.from_cache
+
+
+# ---------------------------------------------------------------------------
+# What a warm run has to say, and when an entry is stale (review I2, I3 residue)
+# ---------------------------------------------------------------------------
+
+
+def test_a_cache_hit_repeats_the_currency_warning_the_cold_run_gave(tmp_path):
+    """The panel is the same, so what was wrong with it still is."""
+
+    class Undeclared(StubProvider):
+        def fetch_one(self, identifier, request):
+            self.calls.append((identifier,))
+            return _panel_with_currency(identifier, None)
+
+    request = _request(("AAA",), currency="USD", cache_dir=str(tmp_path))
+    cold = ingest(request, provider=Undeclared())
+    warm = ingest(request, provider=Undeclared())
+
+    note = "do not say what currency"
+    assert any(note in w for w in cold.warnings)
+    assert warm.from_cache
+    assert any(note in w for w in warm.warnings), warm.warnings
+
