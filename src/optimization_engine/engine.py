@@ -8,6 +8,7 @@ whether to trust it.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -988,8 +989,70 @@ def resolve_expected_returns(
 
     Returns:
         Annualized expected returns, always reindexed onto
-        ``returns.columns`` — so an asset the config forgot contributes zero
-        rather than a NaN that propagates silently through the objective.
+        ``returns.columns``. An asset the vector does not cover is filled with
+        zero rather than a NaN that would propagate through the objective — and
+        a ``UserWarning`` names it, because a zero expected return is an active
+        view, not a neutral one. Names the vector carries that the panel does
+        not hold are dropped. :func:`run_engine` records both in
+        ``run.warnings`` and ``result.extras``.
+
+    Raises:
+        ConfigurationError: If the vector both misses panel assets *and* names
+            assets the panel does not hold — the signature of a misspelt key,
+            which would otherwise zero the asset it was meant for. See
+            :func:`expected_return_gaps`.
+    """
+    resolved, _, _ = _resolve_expected_returns(config, returns, cov, expected_returns)
+    return resolved
+
+
+def expected_return_gaps(
+    expected_returns: pd.Series | dict[str, float], assets: Sequence[str]
+) -> tuple[list[str], list[str]]:
+    """Where an expected-return vector and a universe disagree.
+
+    Args:
+        expected_returns: The vector, as a Series or a mapping.
+        assets: The universe it is meant to cover.
+
+    Returns:
+        ``(missing, unknown)``: the assets with no expected return — absent, or
+        NaN — in universe order, and the vector's names the universe does not
+        hold, in the vector's order.
+    """
+    vector = pd.Series(expected_returns, dtype=float)
+    universe = {str(a) for a in assets}
+    covered = {str(k) for k, v in vector.items() if pd.notna(v)}
+    missing = [str(a) for a in assets if str(a) not in covered]
+    unknown = [str(k) for k in vector.index if str(k) not in universe]
+    return missing, unknown
+
+
+def _resolve_expected_returns(
+    config: EngineConfig,
+    returns: pd.DataFrame,
+    cov: pd.DataFrame,
+    expected_returns: pd.Series | None,
+) -> tuple[pd.Series, list[str], list[str]]:
+    """:func:`resolve_expected_returns`, also returning what it filled and dropped.
+
+    The rule, applied to an explicit or configured vector (an estimate from the
+    history covers the panel by construction):
+
+    * Missing *and* unknown names together are refused. That is what a
+      misspelling looks like — ``EM_Equityy`` given, ``EM_Equity`` therefore
+      absent — and filling the real asset with zero would build the book on a
+      bearish view nobody stated.
+    * Missing names alone are filled with zero and warned about.
+    * Unknown names alone are dropped. A walk-forward hands a screened window
+      a subset of the columns the config was written for; that is not a
+      mistake, and refusing it would fail every such window.
+
+    Returns:
+        ``(vector, missing, unknown)``.
+
+    Raises:
+        ConfigurationError: As :func:`resolve_expected_returns` documents.
     """
     if expected_returns is None and config.expected_returns:
         expected_returns = pd.Series(config.expected_returns)
@@ -1011,7 +1074,24 @@ def resolve_expected_returns(
             market_weights=market_w,
             cov_matrix=cov,
         )
-    return expected_returns.reindex(returns.columns).fillna(0.0)
+    missing, unknown = expected_return_gaps(expected_returns, list(returns.columns))
+    if missing and unknown:
+        raise ConfigurationError(
+            f"The expected returns name {', '.join(unknown)}, which the panel does "
+            f"not hold, and give none for {', '.join(missing)}, which it does. That "
+            "is what a misspelt key looks like, and filling the real asset with "
+            "0.0 would optimize on a bearish view nobody stated. Fix the names."
+        )
+    if missing:
+        warnings.warn(
+            f"resolve_expected_returns: no expected return for {len(missing)} asset(s) "
+            f"({', '.join(missing[:5])}{' …' if len(missing) > 5 else ''}); "
+            "assuming 0.0. A zero expected return is an active view, not a "
+            "neutral one.",
+            UserWarning,
+            stacklevel=3,
+        )
+    return expected_returns.reindex(returns.columns).fillna(0.0), missing, unknown
 
 
 def configured_shocks(config: EngineConfig) -> tuple[Shock, ...]:
@@ -1084,10 +1164,12 @@ def run_engine(
             constraints cannot be satisfied.
         StressError: When ``run_stress`` is set and a configured shock names an
             asset outside the panel, which is the same defect as a view on one.
-        ConfigurationError: When ``config.strict_mandate`` is set and a bound
-            or a layer assignment names an asset the panel does not hold. Found
-            by the pre-solve analysis, so not checked under
-            ``check_feasibility=False``.
+        ConfigurationError: When the expected returns both miss panel assets
+            and name assets the panel does not hold — a misspelt key (see
+            :func:`resolve_expected_returns`). Also when
+            ``config.strict_mandate`` is set and a bound or a layer assignment
+            names an asset the panel does not hold; that one is found by the
+            pre-solve analysis, so not checked under ``check_feasibility=False``.
         MandateViolationError: When ``config.strict_mandate`` is set and the
             solved book breaches the mandate past tolerance. Unlike the other
             two this is raised *after* a successful solve — the answer arrived
@@ -1130,7 +1212,7 @@ def run_engine(
         ewma_lambda=config.ewma_lambda,
     )
 
-    expected_returns = resolve_expected_returns(
+    expected_returns, missing_mu, ignored_mu = _resolve_expected_returns(
         config, returns, cov, expected_returns
     )
 
@@ -1221,6 +1303,21 @@ def run_engine(
             stress = stress_test(result.weights, shocks, cov_matrix=cov)
 
     run_warnings: list[str] = list(cov_diag.warnings)
+    # The vector reaching the optimizer is already complete, so the
+    # optimizer's own missing-return warning cannot fire on this path. The
+    # gaps are recorded here instead, where the caller reads them.
+    if missing_mu:
+        result.extras["missing_expected_returns"] = list(missing_mu)
+        run_warnings.append(
+            f"No expected return for {', '.join(missing_mu)}; optimized with 0.0, "
+            "which is an active view, not a neutral one."
+        )
+    if ignored_mu:
+        result.extras["ignored_expected_returns"] = list(ignored_mu)
+        run_warnings.append(
+            f"Expected returns given for {', '.join(ignored_mu)}, which the panel "
+            "does not hold; they were ignored."
+        )
     if feasibility is not None:
         run_warnings.extend(i.message for i in feasibility.warnings)
     run_warnings.extend(result.violations)

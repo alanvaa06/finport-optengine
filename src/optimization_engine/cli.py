@@ -1162,12 +1162,21 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
         except FXError as exc:
             return _fail(args, f"FX conversion failed: {exc}")
 
+    # The config's expected returns name the universe, so the cut is right;
+    # making it without a word was not. A misspelt key lost both names.
+    cut: list[str] = []
     if config.expected_returns:
         common = [c for c in prices.columns if c in config.expected_returns]
         if not common:
             return _fail(
                 args, "Config has no expected returns matching the price columns."
             )
+        unpriced = [a for a in config.expected_returns if a not in prices.columns]
+        unlisted = [c for c in prices.columns if c not in config.expected_returns]
+        if unpriced:
+            cut.append(f"Dropped {', '.join(unpriced)}: expected returns given, no prices.")
+        if unlisted:
+            cut.append(f"Dropped {', '.join(unlisted)}: prices given, no expected return.")
         prices = prices[common]
 
     # Quality is read off the *raw* panel on purpose: aligning first would
@@ -1192,6 +1201,7 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
     # the move across it as one period. That is the split `prices_to_returns`
     # documents and hands to "the alignment step"; this is that step.
     prices, alignment = align_panel(prices, method="common")
+    alignment = cut + alignment
     returns = prices_to_returns(prices)
     # Nothing is missing after alignment, so a NaN surviving here is a
     # degenerate price rather than a listing date. Counting it keeps the
