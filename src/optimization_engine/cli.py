@@ -83,7 +83,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override config.base_currency. Conversion uses FRED FX rates.",
     )
     _add_ingest_arguments(optimize)
-    optimize.add_argument("--output", default="outputs.xlsx", help="Output Excel path.")
+    optimize.add_argument(
+        "--output",
+        help="Excel path for the report. Defaults to outputs.xlsx in the "
+             "working directory, except under --json, where no workbook is "
+             "written unless this is given. An existing file is replaced, "
+             "and the run says so on stderr.",
+    )
     optimize.add_argument(
         "--accept-inaccurate",
         action="store_true",
@@ -661,15 +667,23 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
     _report_layer_exposures(run)
     performance = _report_versus_benchmark(run, config)
 
-    sheets = run_sheets(
-        run,
-        riskfree_rate=config.optimizer.risk_free_rate,
-        data_quality=quality,
-        walk_forward=walk_forward,
-        frontier_uncertainty=uncertainty,
-        performance=performance,
-    )
-    out = write_excel_report(args.output, sheets)
+    # Under --json the result is the document on stdout, so a workbook is
+    # written only when one is asked for; the human default stays, because
+    # a person running `optimize` expects a report to open.
+    output = args.output or (None if args.json else "outputs.xlsx")
+    out = None
+    sheets: dict = {}
+    if output is not None:
+        sheets = run_sheets(
+            run,
+            riskfree_rate=config.optimizer.risk_free_rate,
+            data_quality=quality,
+            walk_forward=walk_forward,
+            frontier_uncertainty=uncertainty,
+            performance=performance,
+        )
+        _announce_overwrite(output)
+        out = write_excel_report(output, sheets)
     if walk_forward is not None:
         comparison = run.in_vs_out_of_sample(
             walk_forward, config.optimizer.risk_free_rate
@@ -701,17 +715,31 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
                     f"    {name:<18} weight RMSE {row['weight_rmse']:.2%} · "
                     f"worst position {row['max_weight_drift']:.2%}"
                 )
-    print(f"Wrote {out} ({len(sheets)} sheets)")
+    if out is not None:
+        print(f"Wrote {out} ({len(sheets)} sheets)")
     _capture(
         args,
         optimization_payload(
             run,
-            output_path=str(out),
+            output_path=str(out) if out is not None else None,
             alignment=alignment,
             data_source=inputs.data_source,
         ),
     )
     return 0
+
+
+def _announce_overwrite(path: str | Path) -> None:
+    """Say on stderr that a file is about to be replaced.
+
+    Replacing is still what happens — a re-run that refused to overwrite
+    its own last report would break the commonest workflow there is — but
+    not in silence: `optimize` used to replace an `outputs.xlsx` it had
+    never been asked to write, and the first anyone heard of it was the
+    missing workbook.
+    """
+    if Path(path).exists():
+        print(f"  Overwriting {path}.", file=sys.stderr)
 
 
 def _apply_benchmark_flags(
@@ -1574,6 +1602,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         frames = sheet.to_frames()
         if sweep_results is not None:
             frames["sweep"] = sweep_results.frame
+        _announce_overwrite(args.output)
         out = write_excel_report(args.output, frames)
         print(f"Wrote {out} ({len(frames)} sheets)")
     _capture(

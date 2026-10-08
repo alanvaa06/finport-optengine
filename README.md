@@ -914,6 +914,11 @@ produced a plausible allocation on data that describes no market. Every
 payload names its source under `data_source`, with `synthetic` as the field
 to branch on.
 
+`optimize` writes its workbook to `outputs.xlsx` unless `--output` says
+otherwise — but not under `--json`, where the result is the document on
+stdout and a workbook is written only when `--output` asks for one. Replacing
+an existing file is announced on stderr.
+
 ```bash
 optengine describe risk_parity --json | jq '{name, requires, supports}'
 ```

@@ -119,6 +119,16 @@ def test_the_script_refuses_to_run_without_data(tmp_path):
     assert not (tmp_path / "report.xlsx").exists()
 
 
+def test_without_json_the_default_workbook_is_still_written(
+    feasible_config, tmp_path, capsys, monkeypatch
+):
+    # The human default is kept: a person running `optimize` expects a report.
+    monkeypatch.chdir(tmp_path)
+    assert main(["optimize", "--config", str(feasible_config), "--sample"]) == 0
+    assert (tmp_path / "outputs.xlsx").exists()
+    assert "Overwriting" not in capsys.readouterr().err
+
+
 def test_optimize_writes_a_report_with_provenance(feasible_config, tmp_path, capsys):
     out_path = tmp_path / "report.xlsx"
     assert (

@@ -320,6 +320,32 @@ def test_a_price_file_is_named_as_the_source(capsys, tmp_path):
     assert payload["data_source"]["synthetic"] is False
 
 
+def test_json_mode_writes_no_workbook_it_was_not_asked_for(capsys, tmp_path, monkeypatch):
+    """A machine caller reads stdout; a workbook in its cwd is a side effect.
+
+    `--output` defaulted to `outputs.xlsx`, so every `optimize --json` wrote
+    one into the working directory — replacing any file of that name, which
+    the probe that found this demonstrated on a pre-existing workbook.
+    """
+    monkeypatch.chdir(tmp_path)
+    victim = tmp_path / "outputs.xlsx"
+    victim.write_bytes(b"a workbook somebody else made")
+    code, payload = _run(capsys, ["optimize", "--config", CONFIG, "--sample", "--json"])
+    assert code == 0
+    assert payload["output_path"] is None
+    assert victim.read_bytes() == b"a workbook somebody else made"
+
+
+def test_replacing_an_existing_workbook_is_said_out_loud(capsys, tmp_path):
+    out = tmp_path / "report.xlsx"
+    out.write_bytes(b"last week's report")
+    code = main(["optimize", "--config", CONFIG, "--sample", "--output", str(out), "--json"])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert json.loads(captured.out)["output_path"] == str(out)
+    assert f"Overwriting {out}" in captured.err
+
+
 def _refusal_argv(case: str, tmp_path: Path) -> list[str]:
     """A command line that ends in each of the refusals the CLI returns."""
     import yaml
