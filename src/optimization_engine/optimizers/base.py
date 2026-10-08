@@ -373,7 +373,8 @@ class BaseOptimizer(ABC):
         self.risk_free_rate = float(risk_free_rate)
         self.accept_inaccurate = accept_inaccurate
         self.strict_mandate = bool(strict_mandate)
-        #: Populated by subclasses; surfaced through ``result.extras``.
+        #: Populated by subclasses during a solve, surfaced through
+        #: ``result.extras``, and cleared at the start of every ``optimize()``.
         self._diagnostics: dict[str, Any] = {}
 
     @property
@@ -441,6 +442,11 @@ class BaseOptimizer(ABC):
                 found a breach past tolerance.
         """
         from optimization_engine.optimizers._cvxpy_helpers import accepting_inaccurate
+
+        # Diagnostics describe one solve. Left over from the previous call, a
+        # fallback's ``projection_distance`` or ``fallback_reason`` was reported
+        # by every later solve on the same instance, exact ones included.
+        self._diagnostics = {}
 
         # Refused rather than repaired. The engine's estimators already pass
         # every estimate through ``nearest_psd``, so only a direct caller can

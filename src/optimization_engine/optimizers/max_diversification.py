@@ -46,8 +46,8 @@ class MaxDiversificationOptimizer(BaseOptimizer):
 
     Bounds are hard on the scaled solve, which is the path taken unless the
     solver fails numerically; the projection fallback holds them only
-    approximately and re-labels ``bounds_mode`` when it runs. Hence the
-    registry's ``"hard_or_projected"``.
+    approximately and re-labels the result's ``bounds_mode`` when it runs.
+    Hence the registry's ``"hard_or_projected"``.
     """
 
     name = "max_diversification"
@@ -90,8 +90,11 @@ class MaxDiversificationOptimizer(BaseOptimizer):
             # the solver: no amount of retrying or projecting makes an
             # unreachable mandate reachable. Projecting anyway is how a book
             # that breaks its own tracking-error budget used to come back
-            # labelled "optimal".
-            if exc.status in {"infeasible", "unbounded"}:
+            # labelled "optimal". A refused ``optimal_inaccurate`` is not a
+            # numerical failure either: the chain found an answer and the
+            # caller declined it, and a projection of the *unconstrained*
+            # solve is a less verified answer than the one refused.
+            if exc.status in {"infeasible", "unbounded", "optimal_inaccurate"}:
                 raise
             return self._fallback_projection(sigma, std, exc)
         except Exception as exc:
@@ -162,7 +165,10 @@ class MaxDiversificationOptimizer(BaseOptimizer):
             "projection, so the diversification ratio is below the true "
             "constrained optimum."
         )
-        self.bounds_mode = "soft_iterated"
+        # On this solve's diagnostics, not on the instance: setting
+        # ``self.bounds_mode`` outlived the solve and labelled every later,
+        # exact solve on the same optimizer as projected.
+        self._diagnostics["bounds_mode"] = "soft_iterated"
         return w
 
     def _dropped_by_projection(self) -> list[str]:
