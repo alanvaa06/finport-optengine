@@ -92,3 +92,75 @@ def test_every_changelog_release_has_its_compare_link():
     links = set(re.findall(r"^\[([^\]]+)\]: https://", changelog, re.M))
     missing = [h for h in headings if h not in links]
     assert missing == [], missing
+
+
+# ---------------------------------------------------------------------------
+# The release workflow
+# ---------------------------------------------------------------------------
+
+RELEASE = ROOT / ".github" / "workflows" / "release.yml"
+
+
+def _release_jobs() -> dict:
+    import yaml
+
+    return yaml.safe_load(RELEASE.read_text(encoding="utf-8"))["jobs"]
+
+
+def _upstream(jobs: dict, name: str) -> set[str]:
+    """Every job ``name`` waits on, directly or through another job."""
+    seen: set[str] = set()
+    pending = [name]
+    while pending:
+        needs = jobs[pending.pop()].get("needs", [])
+        for job in [needs] if isinstance(needs, str) else needs:
+            if job not in seen:
+                seen.add(job)
+                pending.append(job)
+    return seen
+
+
+def _runs(job: dict) -> str:
+    return "\n".join(str(step.get("run", "")) for step in job.get("steps", []))
+
+
+def test_a_tag_publishes_only_from_main():
+    """A ``v*`` tag pushed from any branch published that branch to PyPI."""
+    jobs = _release_jobs()
+    guards = {
+        name
+        for name, job in jobs.items()
+        if "merge-base --is-ancestor" in _runs(job) and "origin/main" in _runs(job)
+    }
+    assert guards & _upstream(jobs, "pypi"), "pypi does not wait on a main-ancestry check"
+
+
+def test_pypi_waits_for_the_test_suite():
+    """The release built and smoke-tested a wheel but never ran the tests."""
+    jobs = _release_jobs()
+    testing = {name for name, job in jobs.items() if "pytest" in _runs(job)}
+    assert testing & _upstream(jobs, "pypi"), "pypi does not wait on a pytest job"
+
+
+def test_actions_are_pinned_by_commit():
+    """A tag is a pointer its owner can move; a commit SHA is not.
+
+    The one exception is PyPA's publish action, documented in
+    docs/RELEASING.md: it pulls a container image named after the ref, and
+    images exist only for release tags.
+    """
+    uses = re.findall(r"^\s*-?\s*uses:\s*(\S+)", RELEASE.read_text(encoding="utf-8"), re.M)
+    assert uses
+    unpinned = [
+        u
+        for u in uses
+        if not re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", u)
+        and not u.startswith("pypa/gh-action-pypi-publish@v")
+    ]
+    assert unpinned == [], unpinned
+
+
+def test_the_build_tools_are_pinned():
+    text = RELEASE.read_text(encoding="utf-8")
+    assert re.search(r"\bbuild==[0-9.]+", text)
+    assert re.search(r"\btwine==[0-9.]+", text)

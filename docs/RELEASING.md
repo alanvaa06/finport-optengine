@@ -123,6 +123,12 @@ The tag is what triggers the PyPI path. The build re-checks that the tag
 matches the version in the source and fails if it does not, so a mistyped
 tag stops the release instead of publishing under the wrong number.
 
+Two more jobs run on a tag, and the upload waits for both. `on-main` refuses
+a tag whose commit is not on `main` (`git merge-base --is-ancestor`), so a
+tag pushed from a feature branch cannot publish that branch. `test` runs the
+full suite on the tagged commit itself — CI ran on the branch, and this is
+the commit being published. Tag `main` after the merge, never before.
+
 Approve the `pypi` environment when GitHub asks, and the upload runs.
 
 ### If something goes wrong
@@ -141,6 +147,13 @@ Fixing forward is always the answer. There is no version number to reuse.
 
 ## Why the publish action is pinned by tag, not SHA
 
+Every other action in the workflow is pinned by commit SHA, with the release
+it came from in a comment, and `build` and `twine` are pinned by version. To
+bump one, resolve the new tag to its commit (`gh api
+repos/actions/checkout/git/ref/tags/v4.4.0`, dereferencing an annotated tag)
+and update both the SHA and the comment. The publish action is the one
+exception:
+
 ```yaml
 uses: pypa/gh-action-pypi-publish@v1.14.2
 ```
@@ -151,7 +164,8 @@ wrong here — this one is a Docker action. The runner pulls
 line carries, and PyPA publishes that image only under release tags. A SHA
 ref resolves to no manifest, and the step dies with `manifest unknown`
 before it ever contacts the index. That is exactly how the first run of this
-workflow failed.
+workflow failed, and it is still how v1.14.2 works: its
+`create-docker-action.py` names the image after `github.action_ref`.
 
 So the reference has to be a tag PyPA has published an image for. Confirm one
 exists before bumping:

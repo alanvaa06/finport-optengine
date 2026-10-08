@@ -15,12 +15,21 @@ name: Release
 # token in this repository's secrets, so there is none to leak or rotate.
 # See docs/RELEASING.md for the one-time setup each index needs.
 #
-# The publish action is referenced by release tag rather than by commit SHA,
-# which is the opposite of the usual advice and is forced: it is a Docker
+# Every other action is pinned by commit SHA, with the release it was in a
+# comment; a tag is a pointer its owner can move. The publish action is
+# referenced by release tag instead, which is the opposite of the usual
+# advice and is forced: it is a Docker
 # action, and the runner pulls ghcr.io/pypa/gh-action-pypi-publish tagged with
 # whatever ref appears below. PyPA publishes that image only under release
 # tags, so a SHA ref resolves to no manifest and the step dies with
-# "manifest unknown" before it ever reaches the index.
+# "manifest unknown" before it ever reaches the index. (Still true at
+# v1.14.2: create-docker-action.py builds the image name from
+# github.action_ref.)
+#
+# A tag reaches PyPI only from a commit already on main, and only after the
+# test suite has passed on it: `on-main` and `test` below. Before them a
+# v* tag pushed from any branch published that branch, tested by nothing but
+# the smoke run in `verify`.
 
 on:
   workflow_dispatch:
@@ -44,9 +53,9 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
 
@@ -116,8 +125,12 @@ jobs:
           PY
 
       - name: Build
+        # Pinned, like the actions: the tools that make the artifact are part
+        # of what a release is, and an unpinned upgrade between a dry run and
+        # the real one is a difference nobody chose.
         run: |
-          python -m pip install --upgrade pip build twine
+          python -m pip install --upgrade pip
+          python -m pip install build==1.6.1 twine==7.0.0
           python -m build
 
       - name: Check metadata
@@ -137,11 +150,50 @@ jobs:
           print(f"{wheel} carries py.typed")
           PY
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist
           path: dist/
           if-no-files-found: error
+
+  on-main:
+    name: The tagged commit is on main
+    # Tags only. A manual run publishes a .devN to TestPyPI from whatever
+    # branch it was started on, which is what a dry run is for.
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The whole history, or merge-base has nothing to walk.
+          fetch-depth: 0
+      - name: Refuse a tag that is not on main
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::${GITHUB_REF_NAME} points at ${GITHUB_SHA}, which is not on main. Merge first, then tag main."
+            exit 1
+          fi
+          echo "${GITHUB_SHA} is on main"
+
+  test:
+    name: Test suite on the tagged commit
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+      # The same install and command as CI's test cells. CI ran on the
+      # branch; this runs on the exact commit being published, which is
+      # the only one whose result matters here.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[all,dev]"
+      - name: Test
+        run: pytest -q
 
   verify:
     name: Installed artifact works
@@ -150,13 +202,13 @@ jobs:
     steps:
       # Checked out for config/example_multi_asset.yaml alone — the code under
       # test comes from the wheel, never from this tree.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: dist
           path: dist/
@@ -214,7 +266,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: dist
           path: dist/
@@ -227,7 +279,7 @@ jobs:
     needs: [build, testpypi]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
       # The whole point of the TestPyPI round trip: prove the thing is
@@ -263,9 +315,10 @@ jobs:
 
   pypi:
     name: Publish to PyPI
-    # Tags only, and only ones the build agreed with.
+    # Tags only, and only ones the build agreed with, on a commit that is on
+    # main and whose tests pass.
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
-    needs: [build, verify]
+    needs: [build, verify, on-main, test]
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -273,7 +326,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: dist
           path: dist/
