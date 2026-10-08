@@ -49,7 +49,9 @@ import pandas as pd
 #: ``2.3`` adds ``data_quality`` to the optimize and backtest payloads, and
 #: ``usable``, ``clean`` and ``findings`` inside the one ``check`` already
 #: carried. A run on a panel with an error-level finding exited 0 and its
-#: document never mentioned it; the findings reached stderr only.
+#: document never mentioned it; the findings reached stderr only. It also adds
+#: ``ingest`` to all three: the request the panel was fetched with, its
+#: window resolved — an ingest with no end date ends on the day it runs.
 SCHEMA_VERSION = "2.3"
 
 
@@ -362,6 +364,35 @@ def data_quality_payload(quality: Any) -> dict[str, Any] | None:
     }
 
 
+def ingest_payload(result: Any) -> dict[str, Any] | None:
+    """The request a panel was fetched with, its window resolved.
+
+    An ingest with no ``end`` ends today and one with no ``start`` counts back
+    from that, so the same flags fetch a different window each day. The
+    resolved dates were hashed into the cache key and written nowhere a reader
+    of the result could see them; here they are, with the fingerprint and
+    whether the panel came from the cache — a cached panel is as old as its
+    entry, not as old as the run.
+
+    Args:
+        result: An :class:`~optimization_engine.ingest.IngestResult`, or
+            ``None`` when the panel did not come through an ingest.
+
+    Returns:
+        A JSON-serializable dict, or ``None`` when nothing was supplied.
+    """
+    if result is None:
+        return None
+    request = result.request
+    entry = getattr(result, "cache_entry", None)
+    return {
+        **request.to_dict(),
+        "fingerprint": request.fingerprint(),
+        "from_cache": bool(getattr(result, "from_cache", False)),
+        "cache_age_seconds": _num(entry.age_seconds) if entry is not None else None,
+    }
+
+
 def covariance_diagnostics_payload(diagnostics: Any) -> dict[str, Any] | None:
     """Whether the covariance estimate is worth the weights built on it.
 
@@ -442,6 +473,7 @@ def optimization_payload(
     output_path: str | None = None,
     alignment: Any = None,
     quality: Any = None,
+    ingest: Any = None,
 ) -> dict[str, Any]:
     """The full result of one solve: weights, and what they rest on.
 
@@ -455,6 +487,8 @@ def optimization_payload(
             is a different claim from "nobody looked".
         quality: The raw panel's data-quality report. ``data_quality`` is
             ``null`` without one, which is "not reported", not "clean".
+        ingest: The :class:`~optimization_engine.ingest.IngestResult` the
+            panel came from; ``ingest`` is ``null`` for a file or the sample.
 
     Returns:
         A JSON-serialisable dict. ``weights`` maps asset name to weight;
@@ -499,6 +533,7 @@ def optimization_payload(
         # And what was wrong with it before that. An asset missing a quarter
         # of its history is an error finding that the run proceeds past.
         "data_quality": data_quality_payload(quality),
+        "ingest": ingest_payload(ingest),
         "output_path": output_path,
     }
 
@@ -509,6 +544,7 @@ def check_payload(
     covariance: Any = None,
     *,
     alignment: Any = None,
+    ingest: Any = None,
 ) -> dict[str, Any]:
     """A pre-flight verdict: can this mandate be solved, and on what data.
 
@@ -526,6 +562,8 @@ def check_payload(
         covariance: Covariance diagnostics, when they were computed.
         alignment: The action log from
             :func:`~optimization_engine.data.quality.align_panel`.
+        ingest: The ingest the panel came from, as for
+            :func:`optimization_payload`.
     """
     feas = feasibility_payload(feasibility)
     quality_errors = _strings(getattr(quality, "errors", None))
@@ -535,6 +573,7 @@ def check_payload(
         "command": "check",
         "ready": ready,
         "data_quality": data_quality_payload(quality),
+        "ingest": ingest_payload(ingest),
         # `data_quality` describes the panel as it arrived; `alignment`
         # describes what was done to it afterwards. Reading the first
         # without the second says what was wrong, not what was kept.
@@ -569,6 +608,7 @@ def backtest_payload(
     output_path: str | None = None,
     alignment: Any = None,
     quality: Any = None,
+    ingest: Any = None,
 ) -> dict[str, Any]:
     """What a simulated run of the process actually produced.
 
@@ -592,6 +632,8 @@ def backtest_payload(
             simulated track record that starts three years late because
             one asset listed late is not the same track record.
         quality: The raw panel's data-quality report, as for
+            :func:`optimization_payload`.
+        ingest: The ingest the panel came from, as for
             :func:`optimization_payload`.
     """
     meta = getattr(result, "meta", None)
@@ -626,6 +668,7 @@ def backtest_payload(
         "notes": _notes(getattr(meta, "notes", None)),
         "alignment": _strings(alignment),
         "data_quality": data_quality_payload(quality),
+        "ingest": ingest_payload(ingest),
         "metrics": metrics,
         # The tearsheet applies the configured shocks to the book the run
         # ended on, so this is the stress of what would actually be held

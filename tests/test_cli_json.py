@@ -322,3 +322,49 @@ def test_a_clean_panel_reports_no_findings_rather_than_no_key(capsys, tmp_path):
     )
     assert payload["data_quality"]["usable"] is True
     assert isinstance(payload["data_quality"]["findings"], list)
+
+
+@pytest.mark.parametrize("command", ["optimize", "backtest", "check"])
+def test_the_resolved_ingest_window_is_in_the_payload(capsys, tmp_path, command):
+    """An ingest with no end date ends today, and the document has to say so.
+
+    The resolved window was hashed into the cache key and recorded nowhere a
+    reader of the result could see it, so two runs a day apart produced
+    different numbers from what looked like the same request.
+    """
+    import datetime as dt
+
+    from optimization_engine.ingest.spec import IngestRequest
+
+    config = tmp_path / "cfg.yaml"
+    config.write_text("optimizer: min_variance\n")
+    argv = [
+        command, "--config", str(config), "--provider", "sample",
+        "--identifiers", "US_Equity,Gold,US_Treasuries", "--ingest-period", "3y",
+        "--json",
+    ]
+    if command == "optimize":
+        argv += ["--output", str(tmp_path / "o.xlsx")]
+    if command == "backtest":
+        argv += ["--lookback", "252", "--rebalance-every", "63"]
+
+    _, payload = _run(capsys, argv)
+
+    window = payload["ingest"]
+    expected = IngestRequest(
+        identifiers=("US_Equity", "Gold", "US_Treasuries"), provider="sample", period="3y"
+    )
+    assert window["provider"] == "sample"
+    assert window["end"] == dt.date.today().isoformat()
+    assert window["start"] == expected.start.isoformat()
+    assert window["interval"] == "1d"
+    assert window["fingerprint"] == expected.fingerprint()
+    assert window["from_cache"] is False
+
+
+def test_a_panel_that_was_not_ingested_says_so(capsys, tmp_path):
+    _, payload = _run(
+        capsys,
+        ["optimize", "--config", CONFIG, "--sample", "--output", str(tmp_path / "o.xlsx"), "--json"],
+    )
+    assert payload["ingest"] is None

@@ -706,7 +706,11 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
     _capture(
         args,
         optimization_payload(
-            run, output_path=str(out), alignment=alignment, quality=quality
+            run,
+            output_path=str(out),
+            alignment=alignment,
+            quality=quality,
+            ingest=inputs.ingest,
         ),
     )
     return 0
@@ -1079,6 +1083,9 @@ class _Inputs:
     #: One sentence per change alignment made to the panel. Empty means
     #: nothing was dropped, which is a claim worth being able to make.
     alignment: list[str]
+    #: The ingest the panel came from, for the payload's resolved window;
+    #: ``None`` for ``--prices``, ``--sample`` and ``--yahoo``.
+    ingest: object = None
 
 
 def _fail(args: argparse.Namespace, message: str, code: int = 2) -> int:
@@ -1266,6 +1273,7 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
         quality=quality,
         volumes=volumes,
         alignment=alignment,
+        ingest=ingested,
     )
 
 
@@ -1520,6 +1528,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
             output_path=str(out) if out is not None else None,
             alignment=alignment,
             quality=inputs.quality,
+            ingest=inputs.ingest,
         ),
     )
     return 0
@@ -1620,7 +1629,12 @@ def _cmd_check(args: argparse.Namespace) -> int:
             "the range needs a solver and none answered."
         )
 
-    _capture(args, check_payload(quality, report, diag, alignment=alignment))
+    _capture(
+        args,
+        check_payload(
+            quality, report, diag, alignment=alignment, ingest=inputs.ingest
+        ),
+    )
     if report.fatal_issues:
         print("\nNot ready to optimize.", file=sys.stderr)
         return 2
