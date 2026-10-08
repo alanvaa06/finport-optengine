@@ -420,3 +420,46 @@ def test_active_risk_includes_benchmark_only_names():
 
     explicit = active_risk_decomposition(book.reindex(list("ABC")).fillna(0.0), bench, cov)
     pd.testing.assert_frame_equal(decomposition, explicit)
+
+
+# ---------------------------------------------------------------------------
+# 5. Effective N stays between 1 and the number of assets
+# ---------------------------------------------------------------------------
+#
+# 1/Σw² ignores gross exposure, so [1.5, -0.5] scored 0.4 positions; and a
+# long-only pair at ρ = -0.9 has risk contributions {1.27, -0.27}, which put
+# effective_n_risk at 0.598. Both docstrings promised "between 1 and N".
+
+
+def test_effective_n_normalizes_by_gross_exposure():
+    from optimization_engine.optimizers.diagnostics import effective_n
+
+    assert effective_n(pd.Series([0.25] * 4)) == pytest.approx(4.0)
+    assert effective_n(pd.Series([1.5, -0.5])) == pytest.approx(4.0 / 2.5)
+    lever = pd.Series([0.65, 0.65, 0.65, -0.95])
+    expected = lever.abs().sum() ** 2 / (lever**2).sum()
+    assert effective_n(lever) == pytest.approx(expected)
+    assert 1.0 <= effective_n(lever) <= 4.0
+    # A book half in cash outside the frame is still two equal positions.
+    assert effective_n(pd.Series([0.25, 0.25])) == pytest.approx(2.0)
+
+
+def test_effective_n_risk_stays_in_range_with_a_hedge():
+    from optimization_engine.optimizers.diagnostics import (
+        effective_n_risk,
+        portfolio_diagnostics,
+        risk_contributions,
+    )
+
+    vols = np.array([0.20, 0.05])
+    corr = np.array([[1.0, -0.9], [-0.9, 1.0]])
+    cov = pd.DataFrame(np.outer(vols, vols) * corr, index=["EQ", "BOND"], columns=["EQ", "BOND"])
+    book = pd.Series([0.5, 0.5], index=["EQ", "BOND"])
+    rc = risk_contributions(book, cov)
+    assert float(rc["BOND"]) < 0, "the premise: a negative risk contribution"
+
+    shares = rc.abs() / rc.abs().sum()
+    expected = 1.0 / float((shares**2).sum())
+    assert effective_n_risk(book, cov) == pytest.approx(expected)
+    assert 1.0 <= effective_n_risk(book, cov) <= 2.0
+    assert portfolio_diagnostics(book, cov).effective_n_risk == pytest.approx(expected)

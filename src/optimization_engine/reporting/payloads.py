@@ -140,8 +140,10 @@ def portfolio_diagnostics_payload(diagnostics: Any) -> dict[str, Any] | None:
     """Concentration and exposure diagnostics.
 
     ``effective_n`` against ``effective_n_risk`` is the pair worth reading
-    together: the first counts positions by capital, the second by risk
-    contribution, and the gap between them is what a weights table hides.
+    together: the first counts positions by their share of gross capital, the
+    second by the size of their risk contribution — a hedge counts, whichever
+    way it points — and the gap between them is what a weights table hides.
+    Both lie between 1 and the number of assets.
 
     Args:
         diagnostics: A
