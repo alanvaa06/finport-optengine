@@ -266,6 +266,69 @@ def test_michaud_counts_draws_that_solved_too_few_ranks(returns, config, monkeyp
     assert "Error" not in result.first_error
 
 
+def _mock_rank_failures(monkeypatch, failing):
+    """Make rank ``r`` of draw ``i`` fail whenever ``(i, r)`` is in ``failing``.
+
+    The frontier still comes back — the failure is a status, not an
+    exception — which is the case the rank grid has to survive.
+    """
+    import copy
+
+    import optimization_engine.resampling as res
+
+    calls = {"i": 0}
+
+    def holed(*args, **kwargs):
+        result = copy.deepcopy(_REAL_FRONTIER(*args, **kwargs))
+        i = calls["i"]
+        calls["i"] += 1
+        for draw, rank in failing:
+            if draw == i:
+                result.summary.loc[result.summary.index[rank], "status"] = "failed"
+                result.weights.iloc[:, rank] = np.nan
+        return result
+
+    monkeypatch.setattr(res, "efficient_frontier", holed)
+
+
+def test_a_rank_lost_in_one_draw_does_not_shift_the_others(
+    returns, config, monkeypatch
+):
+    """Ranks are averaged by position, each over the draws where it solved.
+
+    The solved ranks used to be renumbered from zero per draw and the grid cut
+    to the shortest draw, so one failed middle rank in one draw moved every
+    rank above it down a slot in that draw, and the top rank vanished from
+    the result altogether — while the summary said all eight draws averaged
+    cleanly.
+    """
+    clean = resampled_efficient_frontier(returns, config, n_draws=8, n_points=6, seed=1)
+    _mock_rank_failures(monkeypatch, {(0, 2)})
+    holed = resampled_efficient_frontier(returns, config, n_draws=8, n_points=6, seed=1)
+
+    assert list(holed.weights.columns) == list(clean.weights.columns)
+    assert len(holed.weights.columns) == 6
+    assert holed.rank_counts["rank_2"] == 7
+    assert (holed.rank_counts.drop("rank_2") == 8).all()
+    others = [c for c in clean.weights.columns if c != "rank_2"]
+    pd.testing.assert_frame_equal(holed.weights[others], clean.weights[others])
+    np.testing.assert_allclose(holed.weights.sum().values, 1.0, atol=1e-6)
+    assert holed.n_failed == 0
+    assert "rank_2" in holed.summary()
+
+
+def test_a_rank_that_solved_in_a_minority_of_draws_is_dropped_and_named(
+    returns, config, monkeypatch
+):
+    """The draw-level rule, applied per rank: a minority average is refused."""
+    _mock_rank_failures(monkeypatch, {(i, 5) for i in range(5)})
+    result = resampled_efficient_frontier(returns, config, n_draws=8, n_points=6, seed=1)
+
+    assert "rank_5" not in result.weights.columns
+    assert result.rank_counts["rank_5"] == 3
+    assert "rank_5" in result.summary()
+
+
 # ---------------------------------------------------------------------------
 # Plots
 # ---------------------------------------------------------------------------
