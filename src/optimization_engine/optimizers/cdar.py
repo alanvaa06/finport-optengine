@@ -186,7 +186,15 @@ class CDaROptimizer(BaseOptimizer):
             "history the drawdowns come from.",
             stacklevel=4,
         )
-        return (1 + self.returns.mean().values) ** self.periods_per_year - 1
+        # The package's one definition of μ — the arithmetic annualized mean,
+        # as ``expected_returns_from_history("mean")`` gives every other
+        # method. ``(1 + m)^ppy − 1`` sat above it, so a floor out of reach in
+        # arithmetic terms "solved" here.
+        from optimization_engine.data.covariance import expected_returns_from_history
+
+        return expected_returns_from_history(
+            self.returns, method="mean", periods_per_year=self.periods_per_year
+        ).to_numpy(dtype=float)
 
     def _record_drawdown_metrics(
         self, weights: np.ndarray, zeta: float, solver_objective: float

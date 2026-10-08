@@ -566,6 +566,10 @@ def plot_correlation_heatmap(corr: pd.DataFrame, title: str = "Correlation Matri
 def plot_drawdown(returns: pd.Series | pd.DataFrame, title: str = "Drawdown") -> go.Figure:
     """Underwater chart.
 
+    The peak starts at the capital invested, as in
+    :func:`~optimization_engine.analytics.risk.drawdown_series`, so a series
+    that opens with a loss is drawn underwater from its first period.
+
     Args:
         returns: Periodic returns, or a frame of them.
         title: Figure title.
@@ -580,7 +584,7 @@ def plot_drawdown(returns: pd.Series | pd.DataFrame, title: str = "Drawdown") ->
     if isinstance(returns, pd.Series):
         returns = returns.to_frame()
     wealth = (1 + returns).cumprod()
-    peak = wealth.cummax()
+    peak = wealth.cummax().clip(lower=1.0)
     dd = (wealth - peak) / peak
     fig = px.area(dd, title=title, color_discrete_sequence=PALETTE)
     fig.update_layout(
@@ -951,7 +955,9 @@ def plot_relative_wealth(
     p = portfolio.loc[common]
     b = benchmark.loc[common]
     ratio = (1.0 + p).cumprod() / (1.0 + b).cumprod()
-    peak = ratio.cummax()
+    # The high-water mark starts level with the benchmark, at 1, so falling
+    # behind on the first period shows as the drawdown it is.
+    peak = ratio.cummax().clip(lower=1.0)
 
     fig = go.Figure()
     fig.add_trace(

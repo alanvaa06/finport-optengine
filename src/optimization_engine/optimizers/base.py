@@ -22,6 +22,104 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle: audit imports this module
 
 _LOG = logging.getLogger(__name__)
 
+#: How negative the smallest eigenvalue of a covariance may be, as a fraction
+#: of its trace, before the matrix is refused as indefinite. Estimates on the
+#: PSD boundary — singular, shrunk, detoned, or clipped by ``nearest_psd`` —
+#: carry eigenvalues a few ulps below zero, many orders inside this.
+PSD_RTOL = 1e-8
+
+
+class NonPSDCovarianceError(ValueError):
+    """The covariance handed to an optimizer has a materially negative eigenvalue.
+
+    Every solver call wraps the covariance in ``cp.psd_wrap``, which tells
+    CVXPY to trust it rather than check it. On an indefinite matrix that trust
+    buys a quadratic form that can go negative — a long-short minimum-variance
+    solve came back ``optimal`` at ``w'Σw = −0.0445`` — so the matrix is
+    refused before any method sees it.
+
+    Attributes:
+        min_eigenvalue: The smallest eigenvalue of the symmetrized matrix.
+        trace: Its trace, the scale the tolerance is measured against.
+    """
+
+    def __init__(self, min_eigenvalue: float, trace: float) -> None:
+        """Build the error from the eigenvalue that failed the check.
+
+        Args:
+            min_eigenvalue: The smallest eigenvalue found.
+            trace: The matrix's trace.
+        """
+        self.min_eigenvalue = float(min_eigenvalue)
+        self.trace = float(trace)
+        share = abs(self.min_eigenvalue) / self.trace if self.trace > 0 else float("inf")
+        super().__init__(
+            "The covariance matrix is not positive semi-definite: its smallest "
+            f"eigenvalue is {self.min_eigenvalue:.4g} ({share:.2%} of its "
+            "trace), so some portfolios would have negative variance and a "
+            "solve could report one as optimal. Repair it with "
+            "optimization_engine.nearest_psd — the eigenvalue clipping every "
+            "estimator in data.covariance already applies — or check how it "
+            "was built: pairwise-complete estimates and hand-edited "
+            "correlations are the usual causes."
+        )
+
+
+def check_covariance_psd(sigma: np.ndarray | None) -> None:
+    """Refuse a covariance whose smallest eigenvalue is materially negative.
+
+    Args:
+        sigma: The covariance, aligned to the solve's universe, or ``None``.
+            A matrix with non-finite entries is left to the checks that own
+            that failure, which name the asset rather than an eigenvalue.
+
+    Raises:
+        NonPSDCovarianceError: If the smallest eigenvalue is below
+            ``−PSD_RTOL · trace``.
+    """
+    if sigma is None:
+        return
+    values = np.asarray(sigma, dtype=float)
+    if values.size == 0 or not np.isfinite(values).all():
+        return
+    symmetric = (values + values.T) / 2.0
+    smallest = float(np.linalg.eigvalsh(symmetric)[0])
+    trace = float(np.trace(symmetric))
+    if smallest < -PSD_RTOL * max(abs(trace), np.finfo(float).tiny):
+        raise NonPSDCovarianceError(smallest, trace)
+
+
+#: A variance at or below this fraction of the largest one in the matrix is
+#: rounding residue, not risk. A constant column's sample variance is not 0 but
+#: about ``(ε·level)²`` — 1.86e-37 for a flat 0.01% a day, beside 2.6e-2 for an
+#: equity — while a genuinely quiet asset sits within a few orders of the rest
+#: (the sample panel's cash line, at 0.5% volatility, is 1e-3 of the largest).
+ZERO_VARIANCE_RTOL = 1e-12
+
+
+def zero_variance_assets(assets: list, variances: np.ndarray) -> list:
+    """The assets whose variance is zero for every purpose a weight cares about.
+
+    The one test every guard against a degenerate column shares. Comparing with
+    an exact 0 missed constant series, whose sample variance is rounding, and
+    inverse volatility and HRP then put the whole book in them. The scale is
+    the *largest* variance rather than the median, so a universe in which
+    several columns are constant still flags every one of them.
+
+    Args:
+        assets: Asset names, aligned to ``variances``.
+        variances: Per-asset variances, in any consistent units.
+
+    Returns:
+        The assets whose variance is non-finite, non-positive, or at most
+        ``ZERO_VARIANCE_RTOL`` times the largest variance — in input order.
+    """
+    values = np.asarray(variances, dtype=float)
+    finite = values[np.isfinite(values)]
+    scale = float(np.abs(finite).max()) if finite.size else 0.0
+    degenerate = ~(values > ZERO_VARIANCE_RTOL * scale)
+    return [a for a, flag in zip(assets, degenerate) if flag]
+
 
 @dataclass
 class PortfolioConstraints:
@@ -43,8 +141,9 @@ class PortfolioConstraints:
         target_volatility: Hard volatility cap ``√(w'Σw) ≤ σ*``.
         previous_weights: The book being traded *from*. Required for a
             turnover budget and for reporting realized turnover.
-        turnover_limit: Cap on ``Σ|w_i − w_prev,i|``. A one-way turnover of
-            0.20 means at most 20% of the portfolio changes hands.
+        turnover_limit: Cap on ``Σ|w_i − w_prev,i|`` — two-sided, buys plus
+            sells. In a fully invested book a limit of 0.20 lets 10% of the
+            portfolio change hands: 10% sold and 10% bought.
         benchmark_weights: The index the mandate is measured against. Carried
             on the constraints rather than on the objective because it is what
             the two limits below are expressed relative to.
@@ -275,9 +374,11 @@ class BaseOptimizer(ABC):
             cov_matrix: Asset covariance, indexed and columned by asset name.
             constraints: The mandate. Defaults to an unconstrained long-only book
                 summing to one.
-            risk_free_rate: Per-period risk-free rate, in the same periodicity as
-                the inputs. Used by the Sharpe-based objectives and reported in
-                the result's summary statistics.
+            risk_free_rate: Risk-free rate in the units of the expected returns,
+                subtracted from them as given — annual when they are
+                annualized, as the engine passes them. Used by the
+                Sharpe-based objectives and reported in the result's
+                summary statistics.
             accept_inaccurate: Whether to take an ``optimal_inaccurate``
                 solution when no solver in the fallback chain converges
                 exactly. ``False`` refuses it — the solve raises
@@ -307,7 +408,8 @@ class BaseOptimizer(ABC):
         self.risk_free_rate = float(risk_free_rate)
         self.accept_inaccurate = accept_inaccurate
         self.strict_mandate = bool(strict_mandate)
-        #: Populated by subclasses; surfaced through ``result.extras``.
+        #: Populated by subclasses during a solve, surfaced through
+        #: ``result.extras``, and cleared at the start of every ``optimize()``.
         self._diagnostics: dict[str, Any] = {}
 
     @property
@@ -362,6 +464,9 @@ class BaseOptimizer(ABC):
             a violation within solver tolerance is acceptable.
 
         Raises:
+            NonPSDCovarianceError: If the covariance has a materially negative
+                eigenvalue. Checked before the solve, on the matrix as given —
+                ``BaseOptimizer._sigma_matrix``, not a subclass's posterior.
             RuntimeError: If the solve produced non-finite weights, which means
                 the problem is unbounded or numerically degenerate.
             SolverFailure: If no solver in the fallback chain returned a usable
@@ -372,6 +477,18 @@ class BaseOptimizer(ABC):
                 found a breach past tolerance.
         """
         from optimization_engine.optimizers._cvxpy_helpers import accepting_inaccurate
+
+        # Diagnostics describe one solve. Left over from the previous call, a
+        # fallback's ``projection_distance`` or ``fallback_reason`` was reported
+        # by every later solve on the same instance, exact ones included.
+        self._diagnostics = {}
+
+        # Refused rather than repaired. The engine's estimators already pass
+        # every estimate through ``nearest_psd``, so only a direct caller can
+        # get here with an indefinite matrix — and repairing it silently would
+        # solve a different matrix from the one passed, by an amount nobody
+        # chose. The error names the repair instead.
+        check_covariance_psd(BaseOptimizer._sigma_matrix(self))
 
         # The scope covers ``_solve`` and nothing else. Every CVXPY solve this
         # method makes happens in there -- including the ones a sub-optimizer
@@ -405,6 +522,11 @@ class BaseOptimizer(ABC):
             "bounds_mode": self.bounds_mode,
             **self._diagnostics,
         }
+        unsupported = self._unsupported_targets()
+        if unsupported:
+            extras["ignored_constraints"] = list(
+                dict.fromkeys([*extras.get("ignored_constraints", []), *unsupported])
+            )
         audit: AuditReport | None = None
         if run_post_solve_diagnostics:
             extras.update(self._post_solve_diagnostics(w))
@@ -422,6 +544,37 @@ class BaseOptimizer(ABC):
             extras=extras,
             audit=audit,
         )
+
+    def _unsupported_targets(self) -> list[str]:
+        """The return and volatility targets set on a method that ignores them.
+
+        Max-Sharpe asked for 9.5% delivered 7.19%, and risk parity asked for 2%
+        volatility delivered 7.18%, with nothing in the result to say the
+        target had never entered the solve — only a log line, and only on the
+        config path. The registry already knows which methods take a target, so
+        the result says so here, for every entry point. No warning: the
+        factory logs one for a configured run, and this also runs for the
+        pre-flight's internal minimum-variance solve, where a target it does
+        not use is expected.
+
+        Returns:
+            ``"target_return"`` and/or ``"target_volatility"``, or an empty
+            list for a method the registry does not know.
+        """
+        from optimization_engine.optimizers.requirements import REQUIREMENTS
+
+        req = REQUIREMENTS.get(self.name)
+        if req is None:
+            return []
+        out: list[str] = []
+        if self.constraints.target_return is not None and not req.supports_target_return:
+            out.append("target_return")
+        if (
+            self.constraints.target_volatility is not None
+            and not req.supports_target_volatility
+        ):
+            out.append("target_volatility")
+        return out
 
     def _audit(self, diagnostics: Any) -> AuditReport | None:
         """Package the compliance check the diagnostics pass already ran.

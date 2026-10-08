@@ -223,8 +223,9 @@ def ingest(
         else None
     )
     # The provider options are part of what was fetched — ``path=`` decides
-    # which file the ``file`` provider reads — so they are part of the key.
-    cache_key = _cache_key(request, provider_options)
+    # which file the ``file`` provider reads — so they are part of the key,
+    # and so is the provider's own token for state the request cannot see.
+    cache_key = _cache_key(request, provider_options, source.cache_token())
     if cache is not None:
         cached = cache.load(cache_key)
         if cached is not None:
@@ -238,6 +239,9 @@ def ingest(
             cache_warnings.extend(
                 _translation_notes(source.name, unsupported, duplicates)
             )
+            # What the fetch said about the panel itself — an undeclared
+            # currency, a conversion — is as true of the cached copy.
+            cache_warnings.extend(entry.notes)
             cache_warnings.extend(_volume_notes(panel, request))
             outcomes = _outcomes_from_panel(
                 panel, request, symbol_by_identifier, unsupported, None, duplicates
@@ -275,10 +279,12 @@ def ingest(
     panel = _reorder(panel, request.identifiers)
 
     fx_degraded = False
+    panel_notes: list[str] = []
     if request.currency:
         panel, currency_note, fx_degraded = _convert_currency(panel, request.currency)
         if currency_note:
             warnings.append(currency_note)
+            panel_notes.append(currency_note)
 
     warnings.extend(_volume_notes(panel, request))
     outcomes = _outcomes_from_panel(
@@ -295,8 +301,12 @@ def ingest(
         not_cached = _uncacheable_reason(outcomes, fx_degraded)
         if not_cached:
             warnings.append(f"Not cached: {not_cached}")
-        else:
-            cache.store(cache_key, panel)
+        elif not cache.store(cache_key, panel, notes=panel_notes):
+            warnings.append(
+                "Not cached: the entry could not be written (see the log). An "
+                "older entry for this request, if one exists, is still served "
+                "until it expires."
+            )
 
     return IngestResult(
         panel=panel,
@@ -553,19 +563,27 @@ def _reorder(panel: PricePanel, identifiers: tuple[str, ...]) -> PricePanel:
     return panel.select([*present, *extra])
 
 
-def _cache_key(request: IngestRequest, provider_options: Mapping[str, Any]) -> str:
-    """The request's fingerprint, extended by the provider options that shape the data.
+def _cache_key(
+    request: IngestRequest,
+    provider_options: Mapping[str, Any],
+    token: str | None = None,
+) -> str:
+    """The request's fingerprint, extended by whatever else shapes the data.
 
-    Without them the ``file`` provider served file A's panel for file B, and
-    the ``sample`` provider one seed's panel for another, whenever the
-    identifiers and window matched. A request with no options keeps the
-    bare fingerprint, so existing cache entries stay valid.
+    Without the options the ``file`` provider served file A's panel for file
+    B, and the ``sample`` provider one seed's panel for another, whenever the
+    identifiers and window matched; without the provider's token it served
+    file A's panel from before an edit. A request with neither keeps the bare
+    fingerprint, so existing cache entries stay valid.
     """
     fingerprint = request.fingerprint()
-    if not provider_options:
+    if not provider_options and token is None:
         return fingerprint
+    payload: dict[str, Any] = {"fingerprint": fingerprint, "options": provider_options}
+    if token is not None:
+        payload["token"] = token
     blob = json.dumps(
-        {"fingerprint": fingerprint, "options": provider_options},
+        payload,
         sort_keys=True,
         separators=(",", ":"),
         default=str,

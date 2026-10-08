@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 
 from optimization_engine.optimizers._bounds import project_to_constraints
-from optimization_engine.optimizers.base import BaseOptimizer
+from optimization_engine.optimizers.base import BaseOptimizer, zero_variance_assets
 
 
 class _ProjectedOptimizer(BaseOptimizer):
@@ -53,7 +53,8 @@ class InverseVolatilityOptimizer(_ProjectedOptimizer):
         """Weight each asset by ``1/σ`` and renormalize.
 
         Raises:
-            ValueError: If any asset has zero variance. ``1/σ`` is undefined
+            ValueError: If any asset has zero variance, exactly or to rounding
+                (see ``zero_variance_assets``). ``1/σ`` is undefined
                 there, and the old behaviour — weight 0 — silently dropped the
                 name from the book while still reporting it as part of the
                 universe. A degenerate column is a data problem, so it is
@@ -62,8 +63,7 @@ class InverseVolatilityOptimizer(_ProjectedOptimizer):
         sigma = self._sigma_matrix()
         if sigma is None:
             raise ValueError("Covariance matrix required")
-        std = np.sqrt(np.diag(sigma))
-        degenerate = [a for a, s in zip(self.assets, std) if not s > 0]
+        degenerate = zero_variance_assets(self.assets, np.diag(sigma))
         if degenerate:
             raise ValueError(
                 f"Inverse-volatility weights are undefined for "
@@ -73,4 +73,5 @@ class InverseVolatilityOptimizer(_ProjectedOptimizer):
                 "saying so. Drop the asset(s) from the universe, or check the "
                 "price history for a constant series."
             )
+        std = np.sqrt(np.diag(sigma))
         return self._project((1.0 / std) / (1.0 / std).sum())

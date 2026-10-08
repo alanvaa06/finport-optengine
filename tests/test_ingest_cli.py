@@ -243,3 +243,66 @@ def test_backtest_refuses_adv_pricing_without_a_fund_size(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "real fund size" in err
     assert "--initial-capital" in err
+
+
+def test_the_config_currency_map_still_converts_what_the_ingest_could_not(
+    tmp_path, capsys, monkeypatch
+):
+    """Only series the ingest actually converted are exempt from the config.
+
+    ``--ingest-currency`` used to make the CLI set ``config.currencies`` aside
+    wholesale and announce that the panel had been converted on ingest —
+    even when the file provider had converted nothing. A peso series was then
+    optimized as if it were in dollars, with exit code 0.
+    """
+    import numpy as np
+
+    from optimization_engine.data import fx
+
+    days = pd.bdate_range("2021-01-04", periods=300)
+    rng = np.random.default_rng(9)
+    pd.DataFrame(
+        {
+            "date": days,
+            "WALMEX": 60 * np.exp(np.cumsum(rng.normal(0, 0.012, len(days)))),
+            "SPY": 400 * np.exp(np.cumsum(rng.normal(0, 0.01, len(days)))),
+        }
+    ).to_csv(tmp_path / "mx.csv", index=False)
+    config = tmp_path / "fx.yaml"
+    config.write_text(
+        "\n".join(
+            [
+                "optimizer: min_variance",
+                "covariance_method: sample",
+                "base_currency: USD",
+                "currencies:",
+                "  WALMEX: MXN",
+                "  SPY: USD",
+            ]
+        )
+    )
+    asked = []
+
+    def fake_rates(currencies, base, start=None, end=None):
+        asked.append(sorted(currencies))
+        rates = pd.DataFrame(
+            {"MXN": np.linspace(0.050, 0.055, len(days)), "USD": 1.0}, index=days
+        )
+        return rates[[c for c in ("MXN", "USD") if c in currencies]]
+
+    monkeypatch.setattr(fx, "fetch_fx_to_base", fake_rates)
+
+    code = main(
+        [
+            "optimize", "--config", str(config),
+            "--provider", "file", "--file-path", str(tmp_path / "mx.csv"),
+            "--identifiers", "WALMEX,SPY", "--ingest-currency", "USD",
+            "--ingest-start", "2021-01-01", "--ingest-end", "2022-12-31",
+            "--output", str(tmp_path / "out.xlsx"),
+        ]
+    )
+    err = capsys.readouterr().err
+
+    assert code == 0
+    assert asked == [["MXN", "USD"]], "the config's MXN entry was never applied"
+    assert "converted to USD on ingest" not in err

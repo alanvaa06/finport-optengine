@@ -126,8 +126,9 @@ def test_max_div_dropped_constraints_names_only_what_projection_loses(cov):
     )
     assert optimizer._dropped_by_projection() == ["max_tracking_error"]
 
-    # No active-share cap and no bucket budget: the projection clips and
-    # redistributes, which is blind to gross exposure.
+    # No active-share cap and no bucket budget: the projection used to clip
+    # and redistribute, blind to gross exposure. A cap that can bind now sends
+    # it down the exact path (review item O15), so leverage is not dropped.
     bare = MaxDiversificationOptimizer(
         cov_matrix=cov,
         constraints=PortfolioConstraints(
@@ -136,4 +137,67 @@ def test_max_div_dropped_constraints_names_only_what_projection_loses(cov):
             leverage=1.1,
         ),
     )
-    assert bare._dropped_by_projection() == ["leverage"]
+    assert bare._dropped_by_projection() == []
+
+
+def test_max_div_refuses_an_inaccurate_answer_instead_of_projecting(cov, monkeypatch):
+    """A refused ``optimal_inaccurate`` is a refusal, not a numerical failure.
+
+    ``docs/ERRORS.md`` promises an answer no solver can verify is "refused, not
+    returned". Max-diversification caught that refusal like any other solver
+    failure and projected the *unconstrained* solve instead — dropping the
+    tracking-error budget, labelling the result ``fallback_projection`` and
+    returning weights for a solve the caller had just declined.
+    """
+    real_solve = max_div_module.solve_problem
+    calls = {"n": 0}
+
+    def inaccurate_once(problem, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise SolverFailure("optimal_inaccurate", ("CLARABEL", "SCS", "OSQP"))
+        return real_solve(problem, *args, **kwargs)
+
+    monkeypatch.setattr(max_div_module, "solve_problem", inaccurate_once)
+    optimizer = MaxDiversificationOptimizer(
+        cov_matrix=cov, constraints=_mandate(0.20), accept_inaccurate=False
+    )
+
+    with pytest.raises(SolverFailure) as raised:
+        optimizer.optimize()
+
+    assert raised.value.status == "optimal_inaccurate"
+    assert calls["n"] == 1, "nothing was solved after the refusal"
+    assert "fallback_reason" not in optimizer._diagnostics
+
+
+def test_max_div_second_solve_reports_its_own_diagnostics(cov, monkeypatch):
+    """A fallback on one solve must not be reported by the next.
+
+    The fallback flipped ``bounds_mode`` on the instance and nothing reset
+    ``_diagnostics`` between calls, so a second, clean solve on the same
+    optimizer still said ``soft_iterated`` and carried the first solve's
+    ``projection_distance``, ``fallback_reason`` and ``dropped_constraints``.
+    """
+    real_solve = max_div_module.solve_problem
+    calls = {"n": 0}
+
+    def one_numerical_failure(problem, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise SolverFailure("solver_error", ("CLARABEL", "SCS"))
+        return real_solve(problem, *args, **kwargs)
+
+    monkeypatch.setattr(max_div_module, "solve_problem", one_numerical_failure)
+    optimizer = MaxDiversificationOptimizer(cov_matrix=cov, constraints=_mandate(0.20))
+
+    first = optimizer.optimize()
+    second = optimizer.optimize()
+
+    assert first.extras["solver_status"] == "fallback_projection"
+    assert second.extras["solver_status"] == "optimal"
+    assert second.extras["bounds_mode"] == "hard"
+    for stale in ("projection_distance", "fallback_reason", "dropped_constraints"):
+        assert stale not in second.extras, stale
+    # The first result is not rewritten by the second solve either.
+    assert first.extras["bounds_mode"] == "soft_iterated"

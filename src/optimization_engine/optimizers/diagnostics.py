@@ -193,16 +193,26 @@ def effective_n(weights: pd.Series | np.ndarray) -> float:
     A 10-asset portfolio with 90% in one name has an effective N near 1.2,
     not 10 — this is the number to look at before calling a book diversified.
 
+    Computed as ``(Σ|w|)² / Σw²``: the weights are taken as shares of *gross*
+    exposure first, so a short counts by its size and leverage or cash do
+    not move the count. Plain ``1/Σw²`` scored ``[1.5, -0.5]`` as 0.4
+    positions, and a book half in cash as twice the assets it holds. For a
+    fully invested long-only book the two agree.
+
     Args:
         weights: Portfolio weights, as fractions of the book.
 
     Returns:
         The effective number of positions, between ``1`` and the number of
-        assets. It counts *capital*, not risk; for the risk-side answer see
+        assets; NaN for a book with no exposure. It counts *capital*, not
+        risk; for the risk-side answer see
         :func:`~optimization_engine.analytics.diversification.effective_number_of_bets`.
     """
-    hhi = herfindahl_index(weights)
-    return float(1.0 / hhi) if hhi > 0 else float("nan")
+    w = np.asarray(weights, dtype=float)
+    squares = float(np.sum(w**2))
+    if not squares > 0:
+        return float("nan")
+    return float(np.sum(np.abs(w)) ** 2 / squares)
 
 
 def diversification_ratio(weights: pd.Series, cov_matrix: pd.DataFrame) -> float:
@@ -232,13 +242,20 @@ def effective_n_risk(weights: pd.Series, cov_matrix: pd.DataFrame) -> float:
     Weight diversification and risk diversification are different things — a
     60/40 book is diversified by weight and concentrated in equity risk.
 
+    A hedge has a *negative* risk contribution, and the contributions then no
+    longer read as shares: a long-only pair at ρ = -0.9 splits {1.27, -0.27},
+    and the inverse Herfindahl of those is 0.6. So the contributions are
+    counted by magnitude — ``|RC_i| / Σ|RC_j|`` — the same gross normalization
+    :func:`effective_n` applies to weights: a hedge is a position that carries
+    risk, whichever way it points.
+
     Args:
         weights: Portfolio weights, as fractions of the book.
         cov_matrix: Asset covariance over the same universe.
 
     Returns:
-        A number between 1 and the asset count. It still measures assets, not
-        independent factors — for that see
+        A number between 1 and the asset count; NaN for a book with no risk.
+        It still measures assets, not independent factors — for that see
         :func:`~optimization_engine.analytics.diversification.effective_number_of_bets`.
     """
     rc = risk_contributions(weights, cov_matrix)

@@ -37,7 +37,8 @@ class TcaPanel:
         total_cost: All costs charged, as a fraction of NAV.
         commission: The broker's share.
         slippage: Spread and market impact.
-        total_turnover: One-way traded notional, as a multiple of NAV.
+        total_turnover: Traded notional, buys plus sells (``Σ|Δw|``), as
+            a multiple of NAV. One-way turnover is half of it.
         annualized_turnover: The same, per year.
         n_rebalances: Dates on which the book traded.
         cost_bps_of_notional: Cost per unit traded. The number to compare

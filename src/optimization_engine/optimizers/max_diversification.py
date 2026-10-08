@@ -38,7 +38,7 @@ from optimization_engine.optimizers._cvxpy_helpers import (
     homogeneous_ignored_constraints,
     solve_problem,
 )
-from optimization_engine.optimizers.base import BaseOptimizer
+from optimization_engine.optimizers.base import BaseOptimizer, zero_variance_assets
 
 
 class MaxDiversificationOptimizer(BaseOptimizer):
@@ -46,8 +46,8 @@ class MaxDiversificationOptimizer(BaseOptimizer):
 
     Bounds are hard on the scaled solve, which is the path taken unless the
     solver fails numerically; the projection fallback holds them only
-    approximately and re-labels ``bounds_mode`` when it runs. Hence the
-    registry's ``"hard_or_projected"``.
+    approximately and re-labels the result's ``bounds_mode`` when it runs.
+    Hence the registry's ``"hard_or_projected"``.
     """
 
     name = "max_diversification"
@@ -57,14 +57,14 @@ class MaxDiversificationOptimizer(BaseOptimizer):
         sigma = self._sigma_matrix()
         if sigma is None:
             raise ValueError("Covariance matrix required")
-        std = np.sqrt(np.diag(sigma))
-        if not (std > 0).all():
-            zero = [a for a, s in zip(self.assets, std) if s <= 0]
+        zero = zero_variance_assets(self.assets, np.diag(sigma))
+        if zero:
             raise ValueError(
                 f"Zero-variance asset(s) {zero}: the diversification ratio is "
                 "undefined when an asset has no volatility. Drop them from the "
                 "universe."
             )
+        std = np.sqrt(np.diag(sigma))
 
         ignored = homogeneous_ignored_constraints(
             self.constraints, "Max-diversification"
@@ -90,8 +90,11 @@ class MaxDiversificationOptimizer(BaseOptimizer):
             # the solver: no amount of retrying or projecting makes an
             # unreachable mandate reachable. Projecting anyway is how a book
             # that breaks its own tracking-error budget used to come back
-            # labelled "optimal".
-            if exc.status in {"infeasible", "unbounded"}:
+            # labelled "optimal". A refused ``optimal_inaccurate`` is not a
+            # numerical failure either: the chain found an answer and the
+            # caller declined it, and a projection of the *unconstrained*
+            # solve is a less verified answer than the one refused.
+            if exc.status in {"infeasible", "unbounded", "optimal_inaccurate"}:
                 raise
             return self._fallback_projection(sigma, std, exc)
         except Exception as exc:
@@ -162,28 +165,28 @@ class MaxDiversificationOptimizer(BaseOptimizer):
             "projection, so the diversification ratio is below the true "
             "constrained optimum."
         )
-        self.bounds_mode = "soft_iterated"
+        # On this solve's diagnostics, not on the instance: setting
+        # ``self.bounds_mode`` outlived the solve and labelled every later,
+        # exact solve on the same optimizer as projected.
+        self._diagnostics["bounds_mode"] = "soft_iterated"
         return w
 
     def _dropped_by_projection(self) -> list[str]:
         """Mandate items the projection fallback cannot carry, in a fixed order.
 
         The fallback re-imposes the mandate by solving ``min ‖x − w‖²`` subject
-        to it, so most of it survives. Two things do not, and naming them here
+        to it, so most of it survives. One thing does not, and naming it here
         saves the reader a trip through ``_bounds.py``:
 
         * ``max_tracking_error`` is stripped unconditionally
           (``_bounds._without_turnover``), because the projection is not handed
           a covariance matrix and active risk cannot be written from weights
           alone.
-        * ``leverage`` survives only on the projection's CVXPY branch, taken
-          when a bucket budget or an active-share cap is set. Without either,
-          the projection clips and redistributes, which is blind to gross
-          exposure.
 
-        ``max_active_share`` is deliberately absent: setting it is exactly what
-        forces the CVXPY branch, so the projection *does* honour it. Listing it
-        would be the same kind of false claim this diagnostic exists to stop. A
+        ``max_active_share`` and ``leverage`` are deliberately absent: setting
+        either one where it can bind is what sends the projection down its
+        CVXPY branch, so the projection *does* honour them. Listing them would
+        be the same kind of false claim this diagnostic exists to stop. A
         turnover budget is dropped too, but the ray-space solve never carried
         it either, so it is already named in ``ignored_constraints``.
 
@@ -191,13 +194,7 @@ class MaxDiversificationOptimizer(BaseOptimizer):
             The constraint field names, empty when the projection carried the
             whole mandate.
         """
-        constraints = self.constraints
         dropped: list[str] = []
-        if constraints.max_tracking_error is not None:
+        if self.constraints.max_tracking_error is not None:
             dropped.append("max_tracking_error")
-        projection_is_exact = (
-            constraints.has_layer_limits or constraints.max_active_share is not None
-        )
-        if constraints.leverage is not None and not projection_is_exact:
-            dropped.append("leverage")
         return dropped

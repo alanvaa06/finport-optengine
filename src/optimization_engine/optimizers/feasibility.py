@@ -1259,17 +1259,25 @@ def analyze_feasibility(
                 )
             )
         elif target < lo - 1e-8:
+            # A warning, not a fatal: the target is a floor (``μ'w ≥ R*``)
+            # since 0.7.0, and every allocation the constraints allow clears
+            # one set below their minimum. This branch predates that change
+            # and kept calling a solvable mandate impossible, which is what
+            # ``raise_on_infeasible`` then refused.
             issues.append(
                 FeasibilityIssue(
                     code="target_return_too_low",
                     message=(
                         f"Target return of {target:.2%} is below the "
-                        f"{lo:.2%} minimum these constraints allow."
+                        f"{lo:.2%} minimum these constraints allow, so every "
+                        "allocation clears it and it will not bind."
                     ),
                     suggestion=(
-                        f"Raise the target to at least {lo:.2%}, or relax the "
-                        "minimum weights on low-return assets."
+                        "The return target is a floor, so you will get the "
+                        "portfolio the method picks without it. Raise the "
+                        f"target above {lo:.2%} to have it change the answer."
                     ),
+                    fatal=False,
                 )
             )
         elif gmv is not None and target < gmv - 1e-8:

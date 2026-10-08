@@ -5,13 +5,13 @@ That only helps if the refusal is legible, so this is the contract: every
 exception the library raises on purpose, what causes it, whether it is
 recoverable, and what to catch.
 
-There are twenty-four exception classes. You almost never want to catch all of
+There are twenty-seven exception classes. You almost never want to catch all of
 them, because they mean three different things:
 
 | It means | Do this | Examples |
 | --- | --- | --- |
-| **Your inputs are wrong** — a config, a universe, a constraint set | Fix the input. Retrying is pointless. | `SpecValidationError`, `LayerConfigurationError`, `BenchmarkError`, `ConfigurationError`, `SweepValidationError`, `StressError`, `UniverseError` |
-| **Your mandate is impossible** — the constraints have no solution, or this method cannot meet them | Relax something, or pick another method. The exception says which. | `InfeasibleConstraintsError`, `InfeasibleBoundsError`, `SolverFailure`, `MandateViolationError` |
+| **Your inputs are wrong** — a config, a universe, a constraint set | Fix the input. Retrying is pointless. | `SpecValidationError`, `LayerConfigurationError`, `BenchmarkError`, `ConfigurationError`, `SweepValidationError`, `StressError`, `UniverseError`, `NonPSDCovarianceError` |
+| **Your mandate is impossible** — the constraints have no solution, or this method cannot meet them | Relax something, or pick another method. The exception says which. | `InfeasibleConstraintsError`, `InfeasibleBoundsError`, `SolverFailure`, `MandateViolationError`, `NoPositiveExcessReturnError` |
 | **The world got in the way** — network, credentials, a vendor's bad day | Retry, or fix the environment. | `ProviderTransientError`, `ProviderCredentialsError`, `MissingDependencyError` |
 
 Seven error types are exported from the package root — `IngestError`,
@@ -89,7 +89,7 @@ as the same class, distinguishable only by message.
 | --- | --- | --- |
 | `YahooFinanceError` | `load_prices_yahoo` | A missing `yfinance` install, an empty ticker list, an unknown ticker, an empty response |
 | `FREDError` | `load_fred_series`, `load_risk_free_rate` | A malformed series id (only `A-Z`, `0-9`, `_` pass), an unreachable FRED, an empty series |
-| `FXError` | `fetch_fx_to_base`, `convert_prices_to_base` | An unsupported currency (see `supported_currencies()`), a missing cross rate, a conversion that would drop every row |
+| `FXError` | `fetch_fx_to_base`, `convert_prices_to_base` | An unsupported currency (see `supported_currencies()`), a missing cross rate, a conversion that would drop every row, a rate history that starts more than `MAX_LEADING_FX_GAP` rows after the prices or leaves a price date more than `MAX_STALE_FX_DAYS` business days past its newest rate |
 
 Prefer the `ingest` layer for new code: it reports per-identifier provenance
 and routes on the error type. These three stay for the paths that already use
@@ -108,11 +108,14 @@ point: an invalid mandate should cost you a millisecond, not a walk-forward.
 | `SweepValidationError` | `SweepSpec` construction, `run_sweep`, `sweep_from_optimizers` | No parameters at all; a parameter with an empty value list; a non-positive `max_cells`; a dotted path that names nothing on the base configuration; a grid expanding past `max_cells` (200 by default, low on purpose, and itself under a hard cap) |
 | `LayerConfigurationError` | `ConstraintLayer`, `layer_from_mapping`, `effective_layers` | An unknown `basis`; a layer expressing limits as a share of its parent while naming no parent; a named parent layer that does not exist; buckets that sit in more than one parent bucket, so "30% of the parent" has no single meaning; a layer entry that is neither a mapping nor a `ConstraintLayer` |
 | `BenchmarkError` | `BenchmarkSpec` construction, `resolve_benchmark`; `EngineConfig` construction, `EngineConfig.effective_benchmark` and `benchmark_weight_map`, so `run_engine` too | An unknown `kind` or `rebalance` rule; `single_asset` with no asset, or one outside the universe; `custom_weights` with no vector, or naming assets outside the universe — `benchmark_weights` included, which is read as that spec; weights summing to zero under `normalize`; an empty universe; `benchmark_weights` set alongside a `benchmark` that names a different one |
-| `ConfigurationError` | `optimizer_factory`; `EngineConfig` construction and `EngineConfig.from_dict`; `run_engine` and `resolve_expected_returns` | The method requires expected returns, a covariance matrix or a returns frame and got none; a benchmark-relative method with no benchmark **weights**; a tracking-error or active-share budget set without benchmark weights; a malformed Black-Litterman view; `long_only`, `fully_invested`, `strict_mandate` or `denoise` set to anything but true or false (the strings `"true"` and `"false"` are read as such, not through `bool()`); `periods_per_year` not positive; `ewma_lambda` outside `(0, 1)`; expected returns that both leave a panel asset uncovered and name an asset the panel does not hold, which is what a misspelt key looks like (an uncovered asset alone is filled with 0.0 and reported in `run.warnings` and `extras["missing_expected_returns"]`; extra names alone are ignored and reported as `extras["ignored_expected_returns"]`); under `strict_mandate`, a bound or layer assignment naming an asset the panel does not hold |
+| `FrequencyMismatchError` | `resolve_periods_per_year`, and through it the CLI's `check`/`optimize`/`backtest` (exit 2) and the MCP tools | A `periods_per_year` the config states, or an ingest interval, that the spacing of the panel's dates contradicts — `periods_per_year: 252` on month-end prices. A value the config does *not* state is not a contradiction: the dates replace it |
+| `ConfigurationError` | `optimizer_factory`; `EngineConfig` construction and `EngineConfig.from_dict`; `run_engine` and `resolve_expected_returns` | The method requires expected returns, a covariance matrix or a returns frame and got none; a benchmark-relative method with no benchmark **weights**; a tracking-error or active-share budget set without benchmark weights; a malformed Black-Litterman view; `long_only`, `fully_invested`, `strict_mandate` or `denoise` set to anything but true or false (the strings `"true"` and `"false"` are read as such, not through `bool()`); `periods_per_year` not positive; `ewma_lambda` outside `(0, 1)`; expected returns that both leave a panel asset uncovered and name an asset the panel does not hold, which is what a misspelt key looks like (an uncovered asset alone is filled with 0.0 and reported in `run.warnings` and `extras["missing_expected_returns"]`; extra names alone are ignored and reported as `extras["ignored_expected_returns"]`); under `strict_mandate`, a bound or layer assignment naming an asset the panel does not hold; Black-Litterman risk-aversion calibration with no market return to calibrate against |
 | `HoldoutViolationError` | `assert_within_holdout`, on every gated path | A frame handed to a gated run carries a row past the holdout boundary. A guardrail against look-ahead, not a bug in your data |
+| `NonPSDCovarianceError` | `BaseOptimizer.optimize`, before any solve | A covariance whose smallest eigenvalue is below −1e-8 of its trace, so some portfolios would have negative variance. The engine's estimators repair their output with `nearest_psd`, so only a matrix handed to an optimizer directly gets here; the message names the repair. `exc.min_eigenvalue` and `exc.trace` carry the numbers |
 
 `SpecValidationError`, `SweepValidationError`, `LayerConfigurationError`,
-`BenchmarkError` and `ConfigurationError` subclass `ValueError`;
+`BenchmarkError`, `ConfigurationError`, `FrequencyMismatchError` and
+`NonPSDCovarianceError` subclass `ValueError`;
 `HoldoutViolationError` subclasses `RuntimeError`.
 
 Two adjacent cases raise plain builtins rather than a named type: bounds with
@@ -272,6 +275,14 @@ not a trade) and a **tracking-error budget** (a risk statement, not a weights
 one). An audit that ran without a covariance matrix could not check the second
 at all, and comes back clean because it did not look.
 
+The audit does not check a return or volatility target, because a method that
+takes no target never imposed one. `ignored_constraints` says so instead: it
+names `target_return` or `target_volatility` whenever they are set on a method
+that does not take them (max-Sharpe, risk parity, the hierarchical and naive
+methods), and `fully_invested` when an open budget is ignored (max-Sharpe,
+max-diversification, risk parity). The pre-flight leaves such a target out, so
+it is never a fatal finding against a solve that does not read it.
+
 ## Infeasible mandates
 
 The difference between these four matters.
@@ -343,6 +354,16 @@ tracking-error or active-share budget. A benchmark holding an asset your
 bounds cap below its index weight sets a *floor* on tracking error that no
 allocation can go under. Raise the limit or relax the bound.
 
+**`NoPositiveExcessReturnError`** is max-Sharpe's own, and a `ValueError`. It
+means no allocation the constraints allow earns more than the risk-free rate,
+so every Sharpe ratio on offer is at or below zero and there is no tangency
+portfolio. It is decided over the feasible set, not asset by asset: a
+long-only box that caps the only asset above cash raises it (and says what the
+best feasible excess return is, on `exc.best_excess_return`), while a
+long-short book whose assets all trail cash does not, when a spread between
+them beats it. NCO catches it inside a cluster and solves that cluster for
+minimum variance instead, naming it in `extras["nco_min_variance_fallback"]`.
+
 **`MandateViolationError`** is the fourth, and the only one raised *after* a
 successful solve. It means the answer arrived and does not comply, and you had
 asked to be told loudly:
@@ -404,11 +425,14 @@ stderr, and turned into a code:
 | Code | Meaning |
 | --- | --- |
 | `0` | Success |
-| `1` | The command ran and the answer is "no" — `check` found the mandate infeasible or the data unusable, `ingest` completed but the panel is incomplete |
-| `2` | The command could not run — bad config, unresolvable benchmark, data error under `--strict`, infeasible constraints, solver failure, provider error |
+| `1` | The command ran and the answer is "no" — `check` found the data unusable, `ingest` completed but the panel is incomplete |
+| `2` | The command could not run, or the mandate cannot — no data source named (or more than one), a missing, unreadable or malformed config or price file, unresolvable benchmark, data error under `--strict`, infeasible constraints (including `check` finding the mandate impossible), solver failure, provider error |
 
 The distinction is worth honouring in a script: `1` means the engine worked and
-is telling you something, `2` means it never got that far.
+is telling you something about the data, `2` means it never got as far as an
+allocation. `check` puts an impossible mandate under `2` on purpose: it is the
+same finding `optimize --strict` stops on, and a script should not have to
+handle it differently depending on which command found it.
 
 `--json` keeps those codes for anything the command *returns*, with one
 addition: an exception that escapes a command is caught, its traceback printed
@@ -423,12 +447,15 @@ result still emits one:
 ```json
 {
   "schema_version": "...",
-  "command": "optimize",
-  "error": "SpecValidationError: execution_lag cannot be negative; got -1.",
-  "exit_code": 1
+  "command": "backtest",
+  "error": "execution_lag cannot be negative; got -1. A negative lag would trade on a decision not yet taken.",
+  "exit_code": 2
 }
 ```
 
+`error` carries the same reason the command printed to stderr — the
+infeasible constraint, the solver that gave up, the breached limit, the
+unknown method name — whether the command returned its code or raised.
 A caller parsing stdout never has to tell "no JSON" apart from "JSON I could
 not read". Note that a run which raised reports the failure *even if it had
 already captured a payload*: emitting that payload under a non-zero exit would

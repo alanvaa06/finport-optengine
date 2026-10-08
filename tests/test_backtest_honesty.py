@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -305,3 +306,60 @@ def test_weight_path_hash_tolerates_one_ulp():
     assert compute_result_hash(nav, trades, costs, held) != compute_result_hash(
         nav, trades, costs, moved
     )
+
+
+# -- what a schedule's dates mean ---------------------------------------------
+
+
+def test_lag_zero_holds_each_target_over_the_bar_it_is_dated_on(flat_returns):
+    """Pins the semantics the docs now state: the index is the first holding bar.
+
+    An oracle that knows each bar's winner and stamps it on that bar earns the
+    winner's return at ``execution_lag=0`` — the schedule date is the first bar
+    the target is held over, not the close it was decided on — and earns
+    nothing special at ``execution_lag=1``.
+    """
+    winner = (flat_returns["A"] > flat_returns["B"]).astype(float)
+    oracle = pd.DataFrame({"A": winner, "B": 1.0 - winner})
+    free = BacktestSpec(frequency="none", costs=CostSpec(commission_bps=0.0))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        same_bar = run_backtest(flat_returns, oracle, free)
+        lagged = run_backtest(flat_returns, oracle, free.with_(execution_lag=1))
+    best = flat_returns.max(axis=1)
+    np.testing.assert_allclose(same_bar.returns.to_numpy(), best.to_numpy())
+    assert float(lagged.returns.mean()) < float(best.mean())
+
+
+def test_a_dated_schedule_at_lag_zero_warns_that_it_must_not_use_its_own_bar(
+    flat_returns,
+):
+    """The default lag is honest only for a schedule built before each bar."""
+    schedule = pd.DataFrame(
+        0.5, index=flat_returns.index[::5], columns=ASSETS
+    )
+    with pytest.warns(UserWarning, match="execution_lag=0"):
+        run_backtest(flat_returns, schedule, BacktestSpec(frequency="none"))
+
+
+def test_no_schedule_warning_where_the_dates_cannot_leak(flat_returns, returns):
+    """A lag, a constant book, and the walk-forward's own schedule stay quiet."""
+    schedule = pd.DataFrame(0.5, index=flat_returns.index[::5], columns=ASSETS)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        run_backtest(
+            flat_returns, schedule, BacktestSpec(frequency="none", execution_lag=1)
+        )
+        run_backtest(
+            flat_returns, pd.Series(0.5, index=ASSETS), BacktestSpec(frequency="none")
+        )
+        # The walk-forward stamps each target on the first bar it is held,
+        # from a window that ends the bar before: lag 0 is exact for it.
+        walk_forward_run(
+            returns,
+            lambda window: pd.Series(1.0 / window.shape[1], index=window.columns),
+            lookback=60,
+            rebalance_every=60,
+            spec=BacktestSpec(frequency="none"),
+        )
+

@@ -63,7 +63,8 @@ class BacktestResult:
         returns: Portfolio returns, net of transaction costs.
         gross_returns: The same series before costs.
         weights: Actual held weights at the start of each period, after drift.
-        turnover: One-way turnover traded on each rebalance date.
+        turnover: Two-sided turnover, ``Σ|Δw|`` (buys plus sells),
+            traded on each rebalance date. One-way is half of it.
         costs: Transaction cost charged on each rebalance date.
         rebalance_dates: When the book was scheduled to trade.
         is_out_of_sample: Whether the weights were chosen without seeing the
@@ -86,7 +87,7 @@ class BacktestResult:
 
     @property
     def total_turnover(self) -> float:
-        """Sum of one-way turnover over the whole backtest, as a fraction of NAV."""
+        """Sum of two-sided turnover, ``Σ|Δw|``, over the backtest, as a fraction of NAV."""
         return float(self.turnover.sum())
 
     @property
@@ -96,7 +97,9 @@ class BacktestResult:
 
     @property
     def annualized_turnover(self) -> float:
-        """Turnover per year — the number a trading desk actually budgets.
+        """Two-sided turnover per year: ``Σ|Δw|``, buys plus sells.
+
+        Desks usually quote one-way turnover, which is half of this.
 
         Returns:
             Total turnover divided by the run's length in years, or ``nan`` for a
@@ -124,7 +127,8 @@ class BacktestResult:
 
         Args:
             periods_per_year: Annualization basis. Defaults to the result's own.
-            riskfree_rate: Per-period risk-free rate for the ratio metrics.
+            riskfree_rate: Annual risk-free rate for the ratio metrics, as a
+                fraction; converted to a per-period rate internally.
 
         Returns:
             A one-row-per-statistic summary frame.
@@ -214,8 +218,10 @@ def backtest_weights(
     Args:
         returns: Periodic asset returns.
         weights: Either one target vector held throughout, or a frame of
-            target weights indexed by the date they become effective (used by
-            the walk-forward runner).
+            target weights indexed by date. At ``execution_lag=0`` the date
+            is the first bar the target is held over, so it may use nothing
+            from that bar; see
+            :func:`~optimization_engine.backtest.runner.run_backtest`.
         frequency: How often the book is traded back to target.
         transaction_cost_bps: One-way cost in basis points of traded notional.
             25 bps on 100% turnover costs 25 bps of NAV.

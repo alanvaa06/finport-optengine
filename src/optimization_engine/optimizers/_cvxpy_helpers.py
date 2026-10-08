@@ -638,8 +638,15 @@ def build_scaled_constraints(
     cons: list[cp.Constraint] = [cp.sum(y) == kappa, kappa >= 1e-8]
 
     lb, ub = bounds_arrays(assets, constraints)
-    cons.append(y >= cp.multiply(lb, kappa))
-    cons.append(y <= cp.multiply(ub, kappa))
+    # An infinite bound is no bound, and ``±inf·κ`` is not a coefficient any
+    # solver accepts, so only the finite entries are written down. NCO's
+    # long-short sub-problems are the caller that sets them.
+    finite_lb = np.flatnonzero(np.isfinite(lb))
+    finite_ub = np.flatnonzero(np.isfinite(ub))
+    if finite_lb.size:
+        cons.append(y[finite_lb] >= cp.multiply(lb[finite_lb], kappa))
+    if finite_ub.size:
+        cons.append(y[finite_ub] <= cp.multiply(ub[finite_ub], kappa))
 
     if constraints.leverage is not None:
         cons.append(cp.norm(y, 1) <= float(constraints.leverage) * kappa)

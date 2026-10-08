@@ -163,14 +163,21 @@ class CVaROptimizer(BaseOptimizer):
         """Annualized expected returns used for the optional return floor."""
         if self.expected_returns is not None:
             return self._mu_vector()
-        periodic = self.returns.mean().values
         warnings.warn(
             "No expected returns supplied; the CVaR return target is being "
             "compared against annualized historical means from the same "
             "scenario set.",
             stacklevel=4,
         )
-        return (1 + periodic) ** self.periods_per_year - 1
+        # The package's one definition of μ — the arithmetic annualized mean,
+        # as ``expected_returns_from_history("mean")`` gives every other
+        # method. ``(1 + m)^ppy − 1`` sat above it, so a floor out of reach in
+        # arithmetic terms "solved" here.
+        from optimization_engine.data.covariance import expected_returns_from_history
+
+        return expected_returns_from_history(
+            self.returns, method="mean", periods_per_year=self.periods_per_year
+        ).to_numpy(dtype=float)
 
     def _record_tail_metrics(self, weights: np.ndarray, zeta: float) -> None:
         """Report the realized tail statistics of the chosen allocation.

@@ -25,6 +25,8 @@ import pandas as pd
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import squareform
 
+from optimization_engine.optimizers.base import zero_variance_assets
+
 LINKAGE_METHODS = ("single", "average", "complete", "ward")
 
 
@@ -38,17 +40,19 @@ def correlation_from_covariance(cov: pd.DataFrame) -> pd.DataFrame:
         The correlation matrix over the same universe.
 
     Raises:
-        ValueError: If any asset has zero variance, which leaves its
-            correlation — and therefore its distance to everything else —
+        ValueError: If any asset has zero variance — exactly, or to rounding,
+            as a constant series does (see ``zero_variance_assets``) — which
+            leaves its correlation, and so its distance to everything else,
             undefined.
     """
-    std = np.sqrt(np.diag(np.asarray(cov.values, dtype=float)))
-    if not (std > 0).all():
-        dead = [str(a) for a, s in zip(cov.columns, std) if s <= 0]
+    variances = np.diag(np.asarray(cov.values, dtype=float))
+    dead = [str(a) for a in zero_variance_assets(list(cov.columns), variances)]
+    if dead:
         raise ValueError(
             f"Zero-variance asset(s) {dead}: the correlation distance is "
             "undefined. Drop them from the universe."
         )
+    std = np.sqrt(variances)
     corr = np.asarray(cov.values, dtype=float) / np.outer(std, std)
     return pd.DataFrame(
         np.clip(corr, -1.0, 1.0), index=cov.index, columns=cov.columns
