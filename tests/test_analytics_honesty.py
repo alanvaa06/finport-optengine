@@ -681,3 +681,70 @@ def test_no_docstring_misstates_a_unit(phrase):
         if phrase in path.read_text(encoding="utf-8")
     ]
     assert not offenders, f"{phrase!r} still appears in {offenders}"
+
+
+# ---------------------------------------------------------------------------
+# 11. An infinite condition number, and a matrix that needed repairing, say so
+# ---------------------------------------------------------------------------
+#
+# The payload turned an infinite condition number into null — the value it
+# uses for "not computed". And run_engine diagnosed the covariance *after*
+# nearest_psd had repaired it, so "not positive semi-definite, repaired"
+# could never be reported.
+
+
+def _covariance_diagnostics(condition: float):
+    from optimization_engine.data.covariance import CovarianceDiagnostics
+
+    return CovarianceDiagnostics(
+        n_assets=3, n_observations=2, observations_per_asset=2 / 3,
+        condition_number=condition, min_eigenvalue=0.0, is_psd=True,
+        effective_observations=2.0,
+    )
+
+
+def test_an_infinite_condition_number_is_distinguishable_from_missing():
+    import json
+
+    from optimization_engine.reporting.payloads import (
+        SCHEMA_VERSION,
+        covariance_diagnostics_payload,
+    )
+
+    singular = covariance_diagnostics_payload(_covariance_diagnostics(float("inf")))
+    assert singular["condition_number"] is None
+    assert singular["condition_number_infinite"] is True
+    json.loads(json.dumps(singular, allow_nan=False))
+
+    finite = covariance_diagnostics_payload(_covariance_diagnostics(250.0))
+    assert finite["condition_number"] == 250.0
+    assert finite["condition_number_infinite"] is False
+
+    major, minor = SCHEMA_VERSION.split(".")[:2]
+    assert major == "2" and int(minor) >= 3, "a new key is a minor bump"
+
+
+def test_run_engine_diagnoses_the_covariance_before_repairing_it(monkeypatch):
+    import optimization_engine.data.covariance as covariance
+    from optimization_engine.data.loader import prices_to_returns, sample_dataset
+    from optimization_engine.engine import run_engine
+
+    def indefinite(returns, ddof=1):
+        cov = returns.cov(ddof=ddof)
+        eigenvalues = np.linalg.eigvalsh(cov.to_numpy())
+        shift = eigenvalues.min() + 0.1 * eigenvalues.max()
+        return cov - np.eye(len(cov)) * shift
+
+    monkeypatch.setattr(covariance, "_sample", indefinite)
+    returns = prices_to_returns(sample_dataset(n_periods=400, seed=3))
+    config = EngineConfig(
+        covariance_method="sample", optimizer=OptimizerSpec(name="equal_weight")
+    )
+    run = run_engine(returns, config)
+
+    diagnostics = run.covariance_diagnostics
+    assert diagnostics.min_eigenvalue < 0
+    assert not diagnostics.is_psd
+    assert any("not positive semi-definite" in w for w in diagnostics.warnings)
+    # The matrix the run carries, and solved against, is the repaired one.
+    assert np.linalg.eigvalsh(run.cov_matrix.to_numpy()).min() > -1e-10

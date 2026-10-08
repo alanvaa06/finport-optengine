@@ -45,7 +45,12 @@ import pandas as pd
 #: ``--json`` could not see the scenarios at all, which made the one number
 #: worth automating an alert on — the worst case — the one number the
 #: structured output omitted.
-SCHEMA_VERSION = "2.2"
+#:
+#: ``2.3`` adds ``condition_number_infinite`` to the covariance diagnostics.
+#: An infinite condition number — a singular estimate — has to be ``null``
+#: in strict JSON, which is also what "not computed" looks like; the flag
+#: tells the two apart.
+SCHEMA_VERSION = "2.3"
 
 
 def _num(value: Any) -> float | None:
@@ -322,6 +327,11 @@ def covariance_diagnostics_payload(diagnostics: Any) -> dict[str, Any] | None:
     ``condition_number`` together mean the optimiser is fitting noise, which
     no amount of solver precision fixes.
 
+    A singular estimate has an infinite condition number, which strict JSON
+    cannot carry: ``condition_number`` is then ``null`` and
+    ``condition_number_infinite`` is ``true``. A ``null`` with the flag
+    ``false`` means the number could not be computed.
+
     Args:
         diagnostics: A
             :class:`~optimization_engine.data.covariance.CovarianceDiagnostics`,
@@ -337,6 +347,10 @@ def covariance_diagnostics_payload(diagnostics: Any) -> dict[str, Any] | None:
         "n_observations": int(diagnostics.n_observations),
         "observations_per_asset": _num(diagnostics.observations_per_asset),
         "condition_number": _num(diagnostics.condition_number),
+        "condition_number_infinite": bool(
+            isinstance(diagnostics.condition_number, (int, float))
+            and math.isinf(diagnostics.condition_number)
+        ),
         "min_eigenvalue": _num(diagnostics.min_eigenvalue),
         "is_psd": bool(diagnostics.is_psd),
         "effective_observations": _num(diagnostics.effective_observations),

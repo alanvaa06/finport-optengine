@@ -45,6 +45,7 @@ from optimization_engine.data.covariance import (
     CovarianceDiagnostics,
     covariance_diagnostics,
     covariance_from_config,
+    nearest_psd,
 )
 from optimization_engine.frontier import FrontierResult, efficient_frontier
 from optimization_engine.optimizers._cvxpy_helpers import SolverFailure
@@ -1113,9 +1114,13 @@ def run_engine(
     if returns.shape[1] == 0:
         raise ValueError("run_engine received returns with no asset columns.")
 
-    cov = covariance_from_config(returns, config)
+    # Diagnose the estimate before the PSD repair: diagnosed after it, the
+    # "not positive semi-definite, repaired" finding could never fire.
+    raw_cov = covariance_from_config(returns, config, ensure_psd=False)
+    cov = nearest_psd(raw_cov)
+    cov.attrs.update(raw_cov.attrs)
     cov_diag = covariance_diagnostics(
-        cov,
+        raw_cov,
         n_observations=len(returns),
         method=config.covariance_method,
         ewma_lambda=config.ewma_lambda,
