@@ -280,6 +280,36 @@ def test_stale_prices_are_flagged():
     assert any(i.code == "stale_prices" for i in report.issues)
 
 
+def test_a_series_that_rarely_moves_is_flagged_without_a_long_stale_run():
+    """Mostly-zero returns understate risk even when no run is long.
+
+    A price that updates every fourth day never repeats for five periods in a
+    row, so the stale-run check cannot fire — yet three returns in four are
+    exactly zero and its volatility and correlations are read off the fourth.
+    ``zero_return_share`` was computed for every asset and never looked at.
+    """
+    prices = sample_dataset(600, seed=6)[["US_Equity", "Gold"]].copy()
+    gold = prices["Gold"].to_numpy().copy()
+    for start in range(0, len(gold) - 4, 4):
+        gold[start + 1 : start + 4] = gold[start]
+    prices["Gold"] = gold
+
+    report = analyze_prices(prices)
+
+    assert int(report.per_asset.loc["Gold", "longest_stale_run"]) < 5
+    flagged = [i for i in report.issues if i.code == "zero_returns"]
+    assert [i.asset for i in flagged] == ["Gold"]
+    assert flagged[0].severity == "warning"
+    assert not report.is_clean
+
+
+def test_an_occasional_unchanged_price_is_not_flagged():
+    prices = sample_dataset(252 * 2).copy()
+    prices.iloc[100:103, 0] = prices.iloc[99, 0]
+    report = analyze_prices(prices)
+    assert not any(i.code == "zero_returns" for i in report.issues)
+
+
 def test_short_common_history_is_flagged():
     prices = sample_dataset(252 * 3).copy()
     prices.iloc[:600, 2] = np.nan
