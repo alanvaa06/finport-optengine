@@ -348,6 +348,29 @@ def test_align_panel_can_drop_short_assets():
     assert any("Dropped" in a for a in actions)
 
 
+def test_the_sample_panel_does_not_depend_on_the_day_it_is_built(monkeypatch):
+    """Same seed, same panel — dates included — on any day.
+
+    The index used to end at ``Timestamp.today()``. The values did not move,
+    but every calendar-driven step did: a monthly rebalance on the sample
+    panel gave a different NAV and ``result_hash`` each day under the same
+    ``spec_hash``, which is the one thing the two hashes exist to rule out.
+    """
+    from optimization_engine import BacktestSpec, run_backtest
+
+    def monthly_rebalanced(day: str):
+        monkeypatch.setattr(pd.Timestamp, "today", classmethod(lambda cls: pd.Timestamp(day)))
+        rets = prices_to_returns(sample_dataset())
+        weights = pd.Series(1.0 / rets.shape[1], index=rets.columns)
+        return rets.index, run_backtest(rets, weights, BacktestSpec(frequency="monthly"))
+
+    index_a, a = monthly_rebalanced("2026-10-08")
+    index_b, b = monthly_rebalanced("2026-10-23")
+    assert index_a.equals(index_b)
+    assert a.meta.spec_hash == b.meta.spec_hash
+    assert a.meta.result_hash == b.meta.result_hash
+
+
 def test_overlap_matrix_is_symmetric_with_counts_on_the_diagonal():
     prices = sample_dataset(252).copy()
     prices.iloc[:100, 0] = np.nan
