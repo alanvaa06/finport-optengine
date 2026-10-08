@@ -1004,15 +1004,35 @@ two surfaces cannot drift apart. Pass `sample: true` for the built-in panel or
 `prices_path` for a file of prices; `config_path` takes the same YAML the CLI
 reads.
 
-Three of the five read filesystem paths — `config_path` and `prices_path`.
-None writes a file, fetches over the network, or touches a keyed provider. Solving blocks — a large solve is seconds of CPU
-and these tools are synchronous, so a client that looks hung is usually an
-optimizer working.
+Three of the five read filesystem paths — `config_path` and `prices_path` —
+and the caller is a model, which can be steered by text it read elsewhere. So
+the paths are confined. A file must lie under an allowed root: the server's
+working directory by default, or the directories named with `--root DIR`
+(repeatable) or `OPTENGINE_MCP_ROOTS` (separated like `PATH`). A server
+started from a filesystem root reads nothing until told where. A relative
+path resolves against the first root, and `..` or a symlink leading out is
+refused. Network and device paths (`\\host\share`, `//host/share`) are
+refused before they are touched — on Windows, looking one up authenticates to
+that host. The extension (`.yaml`/`.yml`/`.json` for a mandate,
+`.csv`/`.xlsx`/`.xls`/`.xlsm`/`.parquet` for prices) and the size (1 MiB and
+64 MiB) are checked before a byte is read, and a file that does not parse is
+reported by path, exception type and position — never by the parser's
+message, which quotes the file. None writes a file, fetches over the network,
+or touches a keyed provider.
+
+Solving blocks — a large solve is seconds of CPU and these tools are
+synchronous, so a client that looks hung is usually an optimizer working. What
+one call may ask for is bounded: at most 200 assets and 10,000 rows per panel,
+and at most 250 re-solves per backtest. The schema refuses a `rebalance_every`
+below 1, a `lookback` below 2 and negative costs. The CLI has none of these
+limits.
 
 Failures a tool anticipates come back with their message intact; anything
 unanticipated is wrapped by the SDK as `Error executing tool optimize` with
 the reason discarded, which is why every reachable bad-input path raises the
-SDK's own error type.
+SDK's own error type — including the engine's own refusals (an unknown
+method, a shock outside the panel, an invalid backtest spec), which used to
+arrive with the reason discarded.
 
 ### Python
 

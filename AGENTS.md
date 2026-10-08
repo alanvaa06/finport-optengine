@@ -168,8 +168,17 @@ prices. Three of the five read filesystem paths — `config_path` and
 `prices_path` — and nothing writes a file, fetches over the network, or
 touches a keyed provider.
 
+**Paths are confined.** Only under the server's working directory, unless it
+was started with `--root DIR` or `OPTENGINE_MCP_ROOTS`; relative paths resolve
+against the first root; network and device paths, unexpected extensions and
+oversized files are refused before anything is read. A file that does not
+parse comes back as path, exception type and position, not the parser's
+message — run `optengine check` on it locally to see that.
+
 Solving blocks: a large solve is seconds of CPU and these tools are
-synchronous. That is an optimizer working, not a hung server.
+synchronous. That is an optimizer working, not a hung server. One call is
+capped at 200 assets, 10,000 rows and 250 backtest re-solves; the limits
+are `MAX_ASSETS`, `MAX_ROWS` and `MAX_RESOLVES` in `mcp_server`.
 
 ## What the library is opinionated about
 
