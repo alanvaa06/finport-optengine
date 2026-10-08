@@ -517,7 +517,12 @@ def _load_universe_for(args: argparse.Namespace, returns, prices):
     print(rules.describe())
 
     policy = getattr(args, "universe_policy", "exclude")
-    cells, bars, names = count_unresolved(universe, returns.index, list(returns.columns))
+    cells, bars, names = count_unresolved(
+        universe,
+        returns.index,
+        list(returns.columns),
+        execution_lag=getattr(args, "execution_lag", None),
+    )
     if cells:
         # Unconditionally on stderr, like the alignment log and for the same
         # reason: the library refuses to pick a collapse policy, this command

@@ -186,6 +186,8 @@ def resolve_universe_mask(
     universe_policy: str | None,
     index: pd.DatetimeIndex,
     assets: list[str],
+    *,
+    execution_lag: int = 0,
 ) -> tuple[np.ndarray, list[str]]:
     """The eligibility in force on every bar, as a hard boolean array.
 
@@ -193,7 +195,10 @@ def resolve_universe_mask(
     weight vector can be multiplied by. Each bar reads the most recent
     evaluation at or before it, so a universe defined on a coarser calendar
     than the run — monthly reconstitutions against daily bars — never reaches
-    forward for the next one.
+    forward for the next one. With no execution lag a universe that reads its
+    own date's data — a threshold or a rank — is read strictly before each
+    bar instead, because the book chosen on that bar is held over it; see
+    :func:`~optimization_engine.universe.eligibility.point_in_time_mask`.
 
     Args:
         universe: The membership definition.
@@ -205,6 +210,9 @@ def resolve_universe_mask(
             warm up at all.
         index: The simulation's bars.
         assets: The return frame's columns, in order.
+        execution_lag: The run's lag, in bars. Defaults to ``0``, the
+            :class:`~optimization_engine.backtest.spec.BacktestSpec` default
+            and the reading that cannot leak.
 
     Returns:
         A ``(bars, assets)`` array of NumPy ``bool``, and the assets the
@@ -235,7 +243,9 @@ def resolve_universe_mask(
             ", ".join(unknown[:5]) + (" …" if len(unknown) > 5 else ""),
             universe_policy,
         )
-    mask = point_in_time_mask(universe, universe_policy, index, assets)
+    mask = point_in_time_mask(
+        universe, universe_policy, index, assets, execution_lag=execution_lag
+    )
     return mask.to_numpy(dtype=bool), unknown
 
 
@@ -299,8 +309,11 @@ def run_backtest(
             it was held, that zero is a sale at the decision's execution bar,
             priced like any other trade. See the module docstring for what
             liquidation means when the panel has fixed columns. Eligibility is
-            read as of the decision date and never later, so this cannot
-            introduce look-ahead. Weights are *not* renormalised: what the
+            read as of the decision date and never later — and, with no
+            execution lag, a threshold or rank verdict is read from the bar
+            before, since the book is held over the decision date and that
+            verdict reads the date's own data. Weights are *not*
+            renormalised: what the
             excluded names held becomes cash, and only the optimizer decides
             how a book is sized.
         universe_policy: How a *not evaluable* cell is read — ``"exclude"``,
@@ -384,7 +397,11 @@ def run_backtest(
     unknown_assets: list[str] = []
     if universe is not None:
         universe_mask, unknown_assets = resolve_universe_mask(
-            universe, universe_policy, index, assets
+            universe,
+            universe_policy,
+            index,
+            assets,
+            execution_lag=spec.execution_lag,
         )
     elif universe_policy is not None:
         _LOG.warning(

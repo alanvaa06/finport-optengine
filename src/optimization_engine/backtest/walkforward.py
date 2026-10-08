@@ -265,7 +265,10 @@ def walk_forward_run(
             restricted to the names eligible **as of the decision date**
             before ``solve`` is called, so the optimizer is never shown a name
             the mandate did not permit it to hold — and a name that becomes
-            eligible at ``t`` is absent from every solve before ``t``. The
+            eligible at ``t`` is absent from every solve before ``t``. With
+            no execution lag the book chosen at ``t`` is held over ``t``, so
+            a threshold or rank rule — which judges ``t`` on ``t``'s own
+            data — is read from the bar before; rolling rules already are. The
             same universe is handed to the replay, so calendar rebalances
             between re-solves respect it too, and ``run.meta.notes["universe"]``
             records the breadth at each decision.
@@ -326,8 +329,14 @@ def walk_forward_run(
 
     universe_mask: np.ndarray | None = None
     if universe is not None:
+        # Read exactly as the replay below will read it, lag included, so the
+        # optimizer is never shown a name the replay would then liquidate.
         universe_mask, _ = resolve_universe_mask(
-            universe, universe_policy, pd.DatetimeIndex(returns.index), list(returns.columns)
+            universe,
+            universe_policy,
+            pd.DatetimeIndex(returns.index),
+            list(returns.columns),
+            execution_lag=spec.execution_lag,
         )
     last_seen: np.ndarray | None = None
     grace = 0

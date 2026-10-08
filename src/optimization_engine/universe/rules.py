@@ -729,7 +729,11 @@ def load_universe(
 
 
 def count_unresolved(
-    universe: Eligibility, index: Any, assets: Sequence[str]
+    universe: Eligibility,
+    index: Any,
+    assets: Sequence[str],
+    *,
+    execution_lag: int | None = None,
 ) -> tuple[int, int, tuple[str, ...]]:
     """How much of the run the collapse policy — not the rules — decides.
 
@@ -748,6 +752,9 @@ def count_unresolved(
         universe: The membership definition.
         index: The run's bars.
         assets: The return frame's columns, in order.
+        execution_lag: The run's lag, so the count reads the universe the way
+            the run will; see
+            :func:`~optimization_engine.universe.eligibility.point_in_time_mask`.
 
     Returns:
         ``(cells, bars, assets)`` — how many ``(bar, asset)`` cells the policy
@@ -757,8 +764,12 @@ def count_unresolved(
     Raises:
         UniverseError: If the universe's own axes cannot be read as dates.
     """
-    admitted = point_in_time_mask(universe, "include", index, assets)
-    refused = point_in_time_mask(universe, "exclude", index, assets)
+    admitted = point_in_time_mask(
+        universe, "include", index, assets, execution_lag=execution_lag
+    )
+    refused = point_in_time_mask(
+        universe, "exclude", index, assets, execution_lag=execution_lag
+    )
     disputed = admitted & (~refused)
     cells = int(disputed.to_numpy(dtype=bool).sum())
     bars = int(disputed.any(axis=1).sum())

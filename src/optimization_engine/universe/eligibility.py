@@ -18,6 +18,18 @@ evaluation date would burn. The rule implemented here excludes the evaluation
 date, so the warm-up is one row longer — and the first evaluable row index
 equals ``window``.)
 
+**Threshold and rank rules read their own date.** A verdict from
+:meth:`Eligibility.from_threshold` or :meth:`Eligibility.from_rank` on ``t``
+is computed from the characteristic on ``t`` — the close of ``t``, for a
+return or a price — so it is known only once ``t`` is over. A simulation with
+no execution lag holds the book chosen on ``t`` over ``t`` itself, and reading
+such a verdict there would drop a name on exactly the session it crashed.
+:attr:`Eligibility.same_bar` records which verdicts read their own date, and
+:func:`point_in_time_mask` reads those strictly *before* each date when the
+lag is zero. Rolling rules are already known before ``t`` opens and are read
+on ``t`` at any lag; with a lag of one or more every verdict is read on the
+decision date, because the book it chooses is not held until the bar after.
+
 **Collapsing is a decision, not a detail.** :meth:`Eligibility.to_mask` is the
 only function in the package that turns three states into two, and it has no
 default policy. ``"exclude"`` silently shrinks the book at every warm-up;
@@ -167,6 +179,8 @@ def point_in_time_mask(
     policy: str,
     dates: Iterable[Any],
     assets: Sequence[Any],
+    *,
+    execution_lag: int | None = None,
 ) -> pd.DataFrame:
     """The eligibility in force on each of ``dates``, as a hard boolean frame.
 
@@ -177,6 +191,12 @@ def point_in_time_mask(
     and requested assets the universe has never heard of, come back unknown and
     are then resolved by ``policy``.
 
+    One exception, and it is the one that matters for a simulation: with
+    ``execution_lag=0`` the book chosen on a date is held over that same bar,
+    so a universe whose verdicts read their own date's data
+    (:attr:`Eligibility.same_bar`) is read strictly *before* each date — the
+    latest verdict that existed when the book was chosen.
+
     Args:
         universe: An :class:`Eligibility`, a
             :class:`~optimization_engine.universe.signal.Signal`, or a frame
@@ -184,6 +204,10 @@ def point_in_time_mask(
         policy: One of :data:`MASK_POLICIES`.
         dates: The dates to evaluate on — normally a simulation's index.
         assets: The columns to report, in order — normally the return frame's.
+        execution_lag: The lag of the simulation the mask is for, in bars.
+            ``0`` reads a same-bar universe strictly before each date; a
+            positive lag, or ``None`` (the default, for inspection rather
+            than simulation), reads every universe at or before it.
 
     Returns:
         A ``bool`` frame indexed by ``dates`` with one column per asset.
@@ -196,8 +220,15 @@ def point_in_time_mask(
     columns = [str(a) for a in assets]
     wanted = _as_date_index(dates)
     values = signal.frame.reindex(columns=columns).astype(BOOLEAN_DTYPE)
+    strictly_before = (
+        execution_lag is not None
+        and int(execution_lag) == 0
+        and isinstance(universe, Eligibility)
+        and universe.same_bar
+    )
+    side = "left" if strictly_before else "right"
     positions = (
-        np.asarray(values.index.searchsorted(wanted.to_numpy(), side="right")) - 1
+        np.asarray(values.index.searchsorted(wanted.to_numpy(), side=side)) - 1
     )
     cells = np.empty((len(wanted), len(columns)), dtype=object)
     cells[:] = pd.NA
@@ -224,12 +255,17 @@ class Rule:
         operator: ``"leaf"``, ``"and"``, ``"or"``, ``"not"``, ``"hysteresis"``
             or ``"hold_through"``.
         operands: The nodes this one combines, empty for a leaf.
+        same_bar: Whether this node's verdict on ``t`` reads data stamped
+            ``t`` — so it is known only at ``t``'s close — rather than only
+            earlier rows. True for threshold and rank leaves, and for any
+            node with such an operand.
     """
 
     description: str
     signal: Signal
     operator: str = "leaf"
     operands: tuple[Rule, ...] = field(default_factory=tuple)
+    same_bar: bool = False
 
 
 def _state_at(rule: Rule, stamp: pd.Timestamp, asset: str) -> bool | None:
@@ -305,9 +341,15 @@ class Eligibility:
             description: What the signal means, for :meth:`explain`.
 
         Returns:
-            The :class:`Eligibility`.
+            The :class:`Eligibility`. A frame or a bare signal is taken to be
+            known before each of its dates opens — what a membership file
+            records — so it is read on its own date at any lag; a panel
+            screened on its own date's data should be shifted one row before
+            it is wrapped. An :class:`Eligibility` keeps its
+            :attr:`same_bar`.
         """
-        return cls(Rule(str(description), _signal_of(signal)))
+        same_bar = isinstance(signal, Eligibility) and signal.same_bar
+        return cls(Rule(str(description), _signal_of(signal), same_bar=same_bar))
 
     @classmethod
     def from_threshold(
@@ -331,7 +373,9 @@ class Eligibility:
 
         Returns:
             An :class:`Eligibility`, *not evaluable* wherever the
-            characteristic was missing.
+            characteristic was missing. Its verdict on ``t`` reads ``t``, so
+            it is :attr:`same_bar`: a run with no execution lag acts on it
+            from the next bar.
 
         Raises:
             UniverseError: On an unknown operator, or a frame whose index is
@@ -339,7 +383,7 @@ class Eligibility:
         """
         signal = Signal(_compare(series_frame, op, value))
         label = name or f"characteristic {op} {value:g}"
-        return cls(Rule(str(label), signal))
+        return cls(Rule(str(label), signal, same_bar=True))
 
     @classmethod
     def from_rank(
@@ -363,7 +407,8 @@ class Eligibility:
         Returns:
             An :class:`Eligibility`, *not evaluable* for any name whose
             characteristic was missing on that date. A missing value is not
-            ranked last: it is not ranked at all.
+            ranked last: it is not ranked at all. Like a threshold, it is
+            :attr:`same_bar`.
 
         Raises:
             UniverseError: If ``top_n`` is below 1, or the index is not dates.
@@ -374,7 +419,7 @@ class Eligibility:
         ranks = numeric.rank(axis=1, ascending=False, method="first")
         raw = (ranks <= int(top_n)).astype(BOOLEAN_DTYPE).where(numeric.notna())
         label = name or f"top {int(top_n)} by characteristic"
-        return cls(Rule(str(label), Signal(raw)))
+        return cls(Rule(str(label), Signal(raw), same_bar=True))
 
     @classmethod
     def from_rolling(
@@ -488,6 +533,7 @@ class Eligibility:
                 Signal(frame),
                 operator="hysteresis",
                 operands=(entry_rule, exit_rule),
+                same_bar=entry_rule.same_bar or exit_rule.same_bar,
             )
         )
 
@@ -518,6 +564,16 @@ class Eligibility:
         """The rule tree's top-level label."""
         return self.rule.description
 
+    @property
+    def same_bar(self) -> bool:
+        """Whether a verdict on ``t`` reads ``t``'s own data anywhere in the tree.
+
+        True when any threshold or rank rule is in it. Such a verdict is known
+        only at ``t``'s close, so a simulation with no execution lag reads it
+        from the bar before; see :func:`point_in_time_mask`.
+        """
+        return self.rule.same_bar
+
     def __repr__(self) -> str:
         """``Eligibility(<description>, dates=…, assets=…)``."""
         shape = self.rule.signal.shape
@@ -537,6 +593,7 @@ class Eligibility:
                 self.signal & right.signal,
                 operator="and",
                 operands=(self.rule, right),
+                same_bar=self.rule.same_bar or right.same_bar,
             )
         )
 
@@ -549,6 +606,7 @@ class Eligibility:
                 self.signal | right.signal,
                 operator="or",
                 operands=(self.rule, right),
+                same_bar=self.rule.same_bar or right.same_bar,
             )
         )
 
@@ -560,6 +618,7 @@ class Eligibility:
                 ~self.signal,
                 operator="not",
                 operands=(self.rule,),
+                same_bar=self.rule.same_bar,
             )
         )
 
@@ -620,6 +679,7 @@ class Eligibility:
                 Signal(held),
                 operator="hold_through",
                 operands=(self.rule,),
+                same_bar=self.rule.same_bar,
             )
         )
 

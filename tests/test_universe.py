@@ -796,6 +796,127 @@ def test_point_in_time_mask_never_reads_forward():
 
 
 # ---------------------------------------------------------------------------
+# Same-bar rules: a verdict that reads its own date cannot trade that date
+# ---------------------------------------------------------------------------
+
+#: Row of the panel on which ``C`` loses 60% in a session.
+CRASH = 15
+
+
+def _crash_panel() -> pd.DataFrame:
+    returns = pd.DataFrame(
+        {"A": 0.001, "B": 0.001, "C": 0.001}, index=_dates(30), dtype=float
+    )
+    returns.iloc[CRASH, 2] = -0.60
+    return returns
+
+
+def _not_in_freefall(returns: pd.DataFrame) -> Eligibility:
+    """The example rule from the rules-file docstring, on the run's returns."""
+    return Eligibility.from_threshold(returns, ">", -0.5, name="not in freefall")
+
+
+def test_a_same_bar_screen_cannot_see_the_bar_its_book_earns():
+    """The headline look-ahead: with no lag the book chosen at ``t`` earns ``t``.
+
+    A threshold on returns judges ``t`` on ``t``'s own return. Read as of
+    ``t`` by a decision whose book is held over ``t``, it dropped every name
+    on exactly the session it crashed. The screen may only act from the next
+    decision, so ``C`` is held through its crash like it would be with no
+    universe at all, and is dropped on the bar after.
+    """
+    returns = _crash_panel()
+    kwargs = dict(
+        lookback=5,
+        rebalance_every=1,
+        spec=BacktestSpec(frequency="none", costs=CostSpec(commission_bps=0.0)),
+    )
+    plain = walk_forward_run(returns, _equal_weight, **kwargs)
+    screened = walk_forward_run(
+        returns,
+        _equal_weight,
+        universe=_not_in_freefall(returns),
+        universe_policy="exclude",
+        **kwargs,
+    )
+    crash = returns.index[CRASH]
+    held = float(screened.run.weights.loc[crash, "C"])
+    assert held == pytest.approx(float(plain.run.weights.loc[crash, "C"]))
+    assert held == pytest.approx(1.0 / 3.0)
+    assert float(screened.weights_history.loc[returns.index[CRASH + 1], "C"]) == 0.0
+    assert float(screened.returns.loc[crash]) == pytest.approx(
+        float(plain.returns.loc[crash])
+    )
+
+
+def test_the_runner_reads_a_same_bar_screen_before_the_bar_at_lag_zero():
+    """Same rule through ``run_backtest``: the replay is where the mask is read."""
+    returns = _crash_panel()
+    targets = pd.DataFrame(1.0 / 3.0, index=returns.index, columns=returns.columns)
+    run = run_backtest(
+        returns,
+        targets,
+        BacktestSpec(frequency="none", costs=CostSpec(commission_bps=0.0)),
+        universe=_not_in_freefall(returns),
+        universe_policy="exclude",
+    )
+    assert float(run.weights.loc[returns.index[CRASH], "C"]) == pytest.approx(1.0 / 3.0)
+    assert float(run.weights.loc[returns.index[CRASH + 1], "C"]) == 0.0
+    # The breadth note says what the decision on the crash bar could see.
+    breadth = run.meta.notes["universe"]["breadth"]
+    assert breadth[pd.Timestamp(returns.index[CRASH]).isoformat()] == 3
+    assert breadth[pd.Timestamp(returns.index[CRASH + 1]).isoformat()] == 2
+
+
+def test_a_lagged_run_still_reads_a_same_bar_screen_on_its_decision_date():
+    """With one bar of lag the decision on ``t`` trades ``t + 1``: nothing moves."""
+    returns = _crash_panel()
+    targets = pd.DataFrame(1.0 / 3.0, index=returns.index, columns=returns.columns)
+    run = run_backtest(
+        returns,
+        targets,
+        BacktestSpec(
+            frequency="none", execution_lag=1, costs=CostSpec(commission_bps=0.0)
+        ),
+        universe=_not_in_freefall(returns),
+        universe_policy="exclude",
+    )
+    breadth = run.meta.notes["universe"]["breadth"]
+    # The decision on the crash bar is the one that sees the crash ...
+    assert breadth[pd.Timestamp(returns.index[CRASH]).isoformat()] == 2
+    # ... and its sale fills on the next bar, after the crash was earned.
+    assert float(run.weights.loc[returns.index[CRASH], "C"]) > 0.3
+    assert float(run.weights.loc[returns.index[CRASH + 1], "C"]) == 0.0
+
+
+def test_a_rolling_screen_is_read_on_its_own_date_at_lag_zero():
+    """Rolling rules already end the bar before, so lag 0 reads them unchanged."""
+    returns = _crash_panel()
+    prior = Eligibility.from_rolling(returns, window=1, agg="min", op=">", value=-0.5)
+    assert prior.same_bar is False
+    mask = point_in_time_mask(
+        prior, "exclude", returns.index, list(returns.columns), execution_lag=0
+    )
+    pd.testing.assert_frame_equal(mask, prior.to_mask("exclude"))
+
+
+def test_same_bar_is_inherited_through_every_combinator():
+    returns = _crash_panel()
+    same = _not_in_freefall(returns)
+    prior = Eligibility.from_rolling(returns, window=2, agg="mean", op=">", value=-1.0)
+    ranked = Eligibility.from_rank(returns, 2)
+    assert same.same_bar is True and ranked.same_bar is True
+    assert prior.same_bar is False
+    assert (prior & same).same_bar is True
+    assert (prior | prior).same_bar is False
+    assert (~same).same_bar is True
+    assert same.hold_through([returns.index[3]]).same_bar is True
+    assert Eligibility.with_hysteresis(prior, same, None).same_bar is True
+    assert Eligibility.from_signal(same, "wrapped").same_bar is True
+    assert Eligibility.from_signal(same.signal, "a bare signal").same_bar is False
+
+
+# ---------------------------------------------------------------------------
 # The rest of the public surface
 # ---------------------------------------------------------------------------
 
