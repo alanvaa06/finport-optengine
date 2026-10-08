@@ -254,3 +254,140 @@ def test_no_trial_count_still_says_so(oos_run):
     assert sheet.deflated_sharpe is None
     assert any("No trial count was supplied" in c for c in sheet.caveats)
     assert sheet.metadata["deflation_note"] is None
+
+
+# ---------------------------------------------------------------------------
+# 3. A constant stream has no Sharpe ratio, not one of 1e17
+# ---------------------------------------------------------------------------
+#
+# The zero-variance guards compared the standard deviation with exactly 0. A
+# constant 1bp stream has a standard deviation of ~1e-20 — rounding, not
+# dispersion — so it scored a Sharpe near 1e17. In a sweep that one cell set
+# the deflation benchmark to ~8e16 and every other cell's DSR to 0, and it
+# collapsed the PBO of a skill-free grid from 0.314 to 0.000.
+
+
+def _constant(value: float, n: int = 300) -> pd.Series:
+    return pd.Series(value, index=_days(n))
+
+
+def test_a_constant_stream_has_no_sharpe_ratio():
+    from optimization_engine.analytics.performance import (
+        probabilistic_sharpe_ratio,
+        sharpe_ratio,
+    )
+    from optimization_engine.analytics.selection import (
+        deflated_sharpe_ratio,
+        minimum_track_record_length,
+    )
+
+    flat = _constant(0.0002)
+    assert float(flat.std()) > 0, "the premise: rounding leaves a nonzero std"
+    assert np.isnan(sharpe_ratio(flat))
+    assert np.isnan(sharpe_ratio(flat, method="geometric"))
+    assert np.isnan(probabilistic_sharpe_ratio(flat))
+    deflated = deflated_sharpe_ratio(flat, n_trials=10)
+    assert np.isnan(deflated.sharpe)
+    assert np.isnan(deflated.deflated)
+    assert not deflated.is_significant
+    assert np.isnan(minimum_track_record_length(flat))
+
+
+def test_the_frame_path_masks_only_the_constant_column():
+    from optimization_engine.analytics.performance import sharpe_ratio
+
+    rng = np.random.default_rng(3)
+    frame = pd.DataFrame(
+        {"noisy": rng.normal(0.0004, 0.01, 300), "flat": 0.0001}, index=_days(300)
+    )
+    sharpes = sharpe_ratio(frame)
+    assert np.isnan(sharpes["flat"])
+    assert sharpes["noisy"] == pytest.approx(sharpe_ratio(frame["noisy"]))
+
+
+def test_a_smooth_but_real_stream_keeps_its_sharpe():
+    from optimization_engine.analytics.performance import sharpe_ratio
+
+    rng = np.random.default_rng(4)
+    smooth = pd.Series(1e-4 + rng.normal(0.0, 1e-7, 300), index=_days(300))
+    assert np.isfinite(sharpe_ratio(smooth))
+    assert sharpe_ratio(smooth) > 1000
+
+
+def _sweep_with_a_constant_cell():
+    rng = np.random.default_rng(7)
+    idx = _days(800)
+    streams = {
+        "equal_weight": pd.Series(rng.normal(0.0004, 0.01, 800), index=idx),
+        "inverse_volatility": pd.Series(rng.normal(0.0003, 0.01, 800), index=idx),
+        "min_variance": pd.Series(0.0001, index=idx),
+    }
+
+    def evaluate(cfg):
+        name = cfg.optimizer.name
+        if name == "risk_parity":
+            raise RuntimeError("solver blew up")
+        return streams[name]
+
+    sweep = SweepSpec(
+        params={
+            "optimizer.name": [
+                "equal_weight", "inverse_volatility", "min_variance", "risk_parity",
+            ]
+        }
+    )
+    base = EngineConfig(optimizer=OptimizerSpec(name="equal_weight"))
+    return run_sweep(base, sweep, evaluate, periods_per_year=PPY), streams
+
+
+def test_a_constant_sweep_cell_no_longer_sets_the_deflation_benchmark():
+    from optimization_engine.analytics.performance import sharpe_ratio
+    from optimization_engine.analytics.selection import deflated_sharpe_ratio
+
+    results, streams = _sweep_with_a_constant_cell()
+    trials = results.trial_sharpes()
+    assert np.isnan(trials["2"])
+    assert np.isnan(results.frame.loc[2, "sharpe"])
+
+    with pytest.warns(UserWarning, match="not finite"):
+        deflated = results.deflated_sharpe(0)
+    assert deflated.n_trials == 4  # the constant and the failed cell still count
+    assert deflated.benchmark_sharpe < 10
+    assert deflated.deflated > 0.0
+
+    survivors = pd.Series(
+        [sharpe_ratio(streams[k]) for k in ("equal_weight", "inverse_volatility")]
+    )
+    expected = deflated_sharpe_ratio(
+        streams["equal_weight"], n_trials=4, trial_sharpes=survivors
+    )
+    assert deflated.deflated == pytest.approx(expected.deflated)
+
+
+def test_an_absurd_trial_sharpe_is_left_out_of_the_dispersion():
+    from optimization_engine.analytics.selection import deflated_sharpe_ratio
+
+    rng = np.random.default_rng(5)
+    x = pd.Series(rng.normal(0.0008, 0.01, 1000))
+    clean = deflated_sharpe_ratio(x, n_trials=3, trial_sharpes=[0.5, 1.0])
+    with pytest.warns(UserWarning, match="1 of the 3 trial Sharpes"):
+        dirty = deflated_sharpe_ratio(x, n_trials=3, trial_sharpes=[0.5, 1.0, 1.17e17])
+    assert dirty.deflated == pytest.approx(clean.deflated)
+
+
+def test_a_constant_candidate_no_longer_decides_the_pbo():
+    from optimization_engine.analytics.selection import (
+        probability_of_backtest_overfitting,
+    )
+
+    rng = np.random.default_rng(7)
+    idx = _days(800)
+    noise = pd.DataFrame(rng.normal(0.0, 0.01, (800, 8)), index=idx)
+    noise.columns = [f"n{i}" for i in range(8)]
+    with_constant = noise.assign(const=0.0001)
+    with_zeros = noise.assign(const=0.0)
+
+    pbo = probability_of_backtest_overfitting(with_constant, 8).pbo
+    # Scored like the exactly-zero-variance candidate it is, not as a winner.
+    assert pbo == pytest.approx(probability_of_backtest_overfitting(with_zeros, 8).pbo)
+    assert pbo > 0.0

@@ -301,7 +301,10 @@ class SweepResults:
         Returns:
             A series named ``"sharpe"``, indexed by :meth:`return_matrix`'s
             columns when aligned — string cell ids — and by integer cell id
-            otherwise. Empty when no cell produced a return stream.
+            otherwise. Empty when no cell produced a return stream. A cell
+            whose stream is constant up to float rounding has no Sharpe and
+            reads NaN; :meth:`deflated_sharpe` leaves it out of the dispersion,
+            with a warning, and still counts it as a trial.
         """
         if not aligned:
             ok = self.frame[self.frame["status"] == "ok"]

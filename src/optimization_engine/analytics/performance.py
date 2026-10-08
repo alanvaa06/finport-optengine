@@ -146,6 +146,32 @@ def _rf_per_period(riskfree_rate: float, periods_per_year: int) -> float:
     return (1 + riskfree_rate) ** (1 / periods_per_year) - 1
 
 
+#: A standard deviation at or below this fraction of the stream's typical
+#: absolute return is float rounding, not dispersion: √ε, about 1.5e-8. A
+#: constant 1bp series carries a standard deviation near 1e-20, and a constant
+#: return rebuilt from compounded prices one near 1e-10 of its level; the
+#: smoothest column of the sample panel sits at 1.2. Equivalently, a
+#: per-period Sharpe above ``1 / _DEGENERATE_STD_RTOL`` (about 6.7e7) can only
+#: come from a stream that never moved.
+_DEGENERATE_STD_RTOL = float(np.sqrt(np.finfo(float).eps))
+
+
+def _dispersion_is_rounding(std, typical_size):
+    """Whether ``std`` is rounding noise around returns of ``typical_size``.
+
+    Works elementwise on scalars, arrays and Series. ``typical_size`` is the
+    mean absolute return; it is floored at 1e-12 so an all-zero stream counts
+    as constant too. A NaN ``std`` is not judged here — it propagates through
+    the ratio on its own.
+    """
+    return std <= _DEGENERATE_STD_RTOL * np.maximum(np.abs(typical_size), 1e-12)
+
+
+def _is_constant(r: pd.Series | pd.DataFrame):
+    """Whether a stream (or each column) is constant up to float rounding."""
+    return _dispersion_is_rounding(r.std(), r.abs().mean())
+
+
 #: The Sharpe conventions this library will compute, and nothing else.
 SHARPE_METHODS = ("arithmetic", "geometric")
 
@@ -195,7 +221,10 @@ def sharpe_ratio(
 
     Returns:
         A dimensionless ratio. One value per column for a frame, a scalar
-        for a series.
+        for a series. NaN for a stream that is constant up to float rounding:
+        its standard deviation is rounding noise, and dividing by it used to
+        produce Sharpes near 1e17 that swamped any comparison they entered —
+        a sweep's deflation benchmark, a CSCV ranking.
 
     Raises:
         ValueError: If ``method`` is neither ``"arithmetic"`` nor
@@ -209,14 +238,20 @@ def sharpe_ratio(
     rf = _rf_per_period(riskfree_rate, periods_per_year)
     excess = r - rf
     ann_vol = annualize_volatility(r, periods_per_year)
-    # A zero-variance stream has an infinite Sharpe, which is the answer, not
-    # an error. pandas already suppresses the warning for the frame path; this
+    # pandas already suppresses the division warning for the frame path; this
     # makes the scalar path behave the same way, which is what lets
     # ``rolling_metrics`` call this per window without changing what it warns.
     with np.errstate(divide="ignore", invalid="ignore"):
         if method == "geometric":
-            return annualize_returns(excess, periods_per_year) / ann_vol
-        return excess.mean() * periods_per_year / ann_vol
+            ratio = annualize_returns(excess, periods_per_year) / ann_vol
+        else:
+            ratio = excess.mean() * periods_per_year / ann_vol
+    # A stream with no dispersion has no Sharpe ratio. Comparing the standard
+    # deviation with exactly zero missed the rounding a constant leaves behind.
+    constant = _is_constant(r)
+    if isinstance(ratio, pd.Series):
+        return ratio.mask(constant)
+    return float("nan") if constant else ratio
 
 
 def probabilistic_sharpe_ratio(
@@ -248,8 +283,10 @@ def probabilistic_sharpe_ratio(
         periods_per_year: Annualization basis — 252 for daily, 12 for monthly.
 
     Returns:
-        A probability in ``[0, 1]``. It does *not* account for how many
-        strategies you tried — for that, deflate it with
+        A probability in ``[0, 1]``, or NaN when there are fewer than 3
+        observations or the stream is constant up to float rounding — it has
+        no Sharpe ratio to be confident about. It does *not* account for how
+        many strategies you tried — for that, deflate it with
         :func:`~optimization_engine.analytics.selection.deflated_sharpe_ratio`.
     """
     import scipy.stats
@@ -260,7 +297,12 @@ def probabilistic_sharpe_ratio(
         return float("nan")
     rf = _rf_per_period(riskfree_rate, periods_per_year)
     excess = series - rf
-    sr_period = float(excess.mean() / excess.std(ddof=1)) if excess.std(ddof=1) > 0 else 0.0
+    if _is_constant(excess):
+        # No dispersion, no Sharpe, so nothing to be confident about. This
+        # used to score a constant 0.0 at exactly zero variance and ~1.0 once
+        # rounding made the variance a hair above it.
+        return float("nan")
+    sr_period = float(excess.mean() / excess.std(ddof=1))
     benchmark_period = benchmark_sharpe / np.sqrt(periods_per_year)
     g = float(skewness(excess))
     k = float(kurtosis(excess))
