@@ -180,6 +180,26 @@ def test_ema_is_annualized_like_the_mean_it_generalizes(returns: pd.DataFrame):
     pd.testing.assert_series_equal(flat, mean, check_names=False, rtol=0, atol=1e-6)
 
 
+def test_geometric_mean_compounds_each_asset_over_its_own_history():
+    """An asset that listed late is annualized over the periods it has.
+
+    ``prod`` skips the missing returns while ``len`` counted them, so on a
+    panel where Gold lists halfway through, its two years of compound growth
+    were spread over all four: 4.6% instead of 9.45%.
+    """
+    prices = sample_dataset(n_periods=252 * 4, seed=3)[["US_Equity", "Gold"]].copy()
+    prices.iloc[: 252 * 2, 1] = np.nan
+    ragged = prices_to_returns(prices)
+
+    on_the_panel = expected_returns_from_history(ragged, method="geometric_mean")
+    on_its_own = expected_returns_from_history(
+        ragged[["Gold"]].dropna(), method="geometric_mean"
+    )
+    assert float(on_the_panel["Gold"]) == pytest.approx(float(on_its_own["Gold"]))
+    full = expected_returns_from_history(ragged[["US_Equity"]], method="geometric_mean")
+    assert float(on_the_panel["US_Equity"]) == pytest.approx(float(full["US_Equity"]))
+
+
 def test_unknown_method_names_every_available_one(returns: pd.DataFrame):
     with pytest.raises(ValueError, match="Unknown expected-return method"):
         expected_returns_from_history(returns, method="arithmetic")

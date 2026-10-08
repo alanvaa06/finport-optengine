@@ -638,7 +638,8 @@ def expected_returns_from_history(
     * ``mean``           — annualized *arithmetic* historical mean,
       ``r̄ · periods_per_year``.
     * ``geometric_mean`` — annualized compound growth rate,
-      ``(∏(1+r))^(ppy/T) − 1``.
+      ``(∏(1+r))^(ppy/T) − 1``, with ``T`` counted per asset so a series that
+      starts late is compounded over its own history.
     * ``ema``            — exponentially-weighted arithmetic mean with the
       given ``span``, weights normalized over the window, annualized as
       ``ema · periods_per_year`` like ``mean``.
@@ -688,7 +689,10 @@ def expected_returns_from_history(
     if method == "mean":
         return returns.mean() * periods_per_year
     if method == "geometric_mean":
-        return ((1 + returns).prod() ** (periods_per_year / len(returns))) - 1
+        # ``prod`` skips a missing return, so the exponent has to count per
+        # column too: ``len`` read a series that listed halfway through as
+        # having compounded its growth over the whole panel.
+        return ((1 + returns).prod() ** (periods_per_year / returns.count())) - 1
     if method == "ema":
         # ``adjust=True`` normalizes the weights over the window. The
         # recursive form (``adjust=False``) seeds itself with the first row and
