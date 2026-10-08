@@ -122,3 +122,43 @@ def test_the_same_bound_without_strict_mandate_is_still_only_a_warning(returns):
     run = run_engine(returns, config)
     assert any("US_Equityy" in w for w in run.warnings)
 
+
+# ---------------------------------------------------------------------------
+# Mutable aliasing (review follow-up)
+# ---------------------------------------------------------------------------
+
+
+def test_from_dict_does_not_share_mappings_with_its_source():
+    source = {
+        "optimizer": {
+            "name": "risk_parity",
+            "risk_budget": {"A": 0.5, "B": 0.5},
+            "extra": {"k": 1},
+        },
+        "benchmark_weights": {"A": 1.0},
+    }
+    config = EngineConfig.from_dict(source)
+    source["optimizer"]["risk_budget"]["A"] = 99.0
+    source["optimizer"]["extra"]["k"] = 2
+    source["benchmark_weights"]["A"] = 42.0
+
+    assert config.optimizer.risk_budget == {"A": 0.5, "B": 0.5}
+    assert config.optimizer.extra == {"k": 1}
+    assert config.benchmark_weights == {"A": 1.0}
+
+
+def test_to_dict_does_not_hand_out_the_configs_own_mappings():
+    config = EngineConfig(
+        optimizer=OptimizerSpec(
+            name="risk_parity", risk_budget={"A": 0.5, "B": 0.5}, extra={"k": 1}
+        ),
+        benchmark_weights={"A": 1.0},
+    )
+    dumped = config.to_dict()
+    dumped["optimizer"]["extra"]["k"] = 2
+    dumped["optimizer"]["risk_budget"]["A"] = 99.0
+    dumped["benchmark_weights"]["A"] = 42.0
+
+    assert config.optimizer.extra == {"k": 1}
+    assert config.optimizer.risk_budget == {"A": 0.5, "B": 0.5}
+    assert config.benchmark_weights == {"A": 1.0}

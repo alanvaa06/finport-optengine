@@ -8,6 +8,7 @@ mutated programmatically, or built from a UI.
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 from dataclasses import dataclass, field
@@ -99,9 +100,11 @@ class OptimizerSpec:
 
         Returns:
             Every field that is not ``None``, so a serialized config carries only
-            what was actually chosen rather than every knob's default.
+            what was actually chosen rather than every knob's default. Copied,
+            not shared: a caller editing the dump — ``extra``, ``risk_budget``,
+            the views — must not reach back into the spec.
         """
-        return {k: v for k, v in self.__dict__.items() if v is not None}
+        return {k: copy.deepcopy(v) for k, v in self.__dict__.items() if v is not None}
 
 
 #: Every key :meth:`EngineConfig.from_dict` reads. A key outside this set is
@@ -461,7 +464,10 @@ class EngineConfig:
             "market_weights": (dict(self.market_weights) if self.market_weights else None),
             "optimizer": self.optimizer.to_dict(),
             "benchmark": self.benchmark.to_dict(),
-            "benchmark_weights": self.benchmark_weights,
+            "benchmark_weights": (
+                dict(self.benchmark_weights)
+                if self.benchmark_weights is not None else None
+            ),
             "max_tracking_error": self.max_tracking_error,
             "max_active_share": self.max_active_share,
             "long_only": self.long_only,
@@ -552,9 +558,15 @@ class EngineConfig:
                 dict(data["market_weights"])
                 if data.get("market_weights") else None
             ),
-            optimizer=OptimizerSpec(**opt_raw),
+            # Copied, so the config does not share risk_budget, the views or
+            # ``extra`` with the mapping it was read from — editing that
+            # mapping afterwards used to edit the config too.
+            optimizer=OptimizerSpec(**copy.deepcopy(dict(opt_raw))),
             benchmark=BenchmarkSpec.from_dict(data.get("benchmark")),
-            benchmark_weights=data.get("benchmark_weights"),
+            benchmark_weights=(
+                dict(data["benchmark_weights"])
+                if data.get("benchmark_weights") is not None else None
+            ),
             max_tracking_error=(
                 float(data["max_tracking_error"])
                 if data.get("max_tracking_error") is not None
