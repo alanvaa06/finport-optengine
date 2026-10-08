@@ -329,6 +329,63 @@ def test_a_rank_that_solved_in_a_minority_of_draws_is_dropped_and_named(
     assert "rank_5" in result.summary()
 
 
+def test_the_point_frontier_is_centred_on_the_estimator_the_draws_use(returns):
+    """The band re-estimates mu from each draw, so the centre must too.
+
+    The point curve was traced on the config's own expected returns while
+    every draw used historical ones, so a config carrying capital-market
+    assumptions drew a flat 3% line through a band whose median ran from 0%
+    to 6%.
+    """
+    from optimization_engine.data.covariance import (
+        covariance_from_config,
+        expected_returns_from_history,
+    )
+
+    assumptions = {a: 0.03 for a in returns.columns}
+    with_cmas = EngineConfig(
+        expected_returns=assumptions,
+        bounds={a: [0.0, 0.4] for a in returns.columns},
+        optimizer=OptimizerSpec(name="mean_variance"),
+    )
+    band = bootstrap_frontier(returns, with_cmas, n_draws=4, n_points=6, seed=0)
+
+    historical = expected_returns_from_history(returns, method="mean")
+    expected = efficient_frontier(
+        EngineConfig(
+            expected_returns=historical.to_dict(),
+            bounds=with_cmas.bounds,
+            optimizer=with_cmas.optimizer,
+        ),
+        covariance_from_config(returns, with_cmas),
+        expected_returns=historical,
+        returns=returns,
+        n_points=6,
+    )
+    np.testing.assert_allclose(
+        band.point_estimate.summary["expected_return"].values,
+        expected.summary["expected_return"].values,
+    )
+
+    held = bootstrap_frontier(
+        returns, with_cmas, n_draws=4, n_points=6, seed=0,
+        reestimate_expected_returns=False,
+    )
+    np.testing.assert_allclose(held.point_estimate.summary["expected_return"], 0.03)
+    np.testing.assert_allclose(held.quantiles.values, 0.03)
+
+
+def test_bootstrap_estimates_mu_when_the_config_carries_none(returns):
+    """Every draw estimates its own mu; the centre used to refuse instead."""
+    bare = EngineConfig(
+        bounds={a: [0.0, 0.4] for a in returns.columns},
+        optimizer=OptimizerSpec(name="mean_variance"),
+    )
+    band = bootstrap_frontier(returns, bare, n_draws=4, n_points=5, seed=0)
+    assert band.n_failed == 0
+    assert band.point_estimate.n_failed == 0
+
+
 # ---------------------------------------------------------------------------
 # Plots
 # ---------------------------------------------------------------------------

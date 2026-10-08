@@ -196,8 +196,16 @@ def bootstrap_frontier(
         quantiles: Quantiles of the return distribution to report.
         seed: Base seed, for reproducibility.
         reestimate_expected_returns: Re-estimate μ on each draw. Set False to
-            hold the configured expected returns fixed and isolate covariance
-            uncertainty.
+            hold the expected returns fixed — the config's, or one estimate
+            from the observed sample when it has none — and isolate
+            covariance uncertainty.
+
+    The point estimate is traced with the same μ the draws use, so the curve
+    sits inside the band it is drawn against: re-estimated from the observed
+    sample by the configured estimator when the draws re-estimate, the fixed
+    vector when they do not. It used to take ``config.expected_returns``
+    either way, so a config carrying capital-market assumptions drew its
+    centre on those and its band on history.
 
     Raises:
         ValueError: If every draw fails, or ``n_draws`` is below 2.
@@ -207,12 +215,24 @@ def bootstrap_frontier(
 
     import copy
 
+    from optimization_engine.engine import resolve_expected_returns
+
+    # The estimator the draws use. With re-estimation on, the config's own
+    # vector is set aside so ``resolve_expected_returns`` falls through to
+    # the configured history estimator — on the observed sample for the
+    # centre, on each drawn sample for the band.
+    estimator = config
+    if reestimate_expected_returns:
+        estimator = copy.deepcopy(config)
+        estimator.expected_returns = {}
+    observed_cov = covariance_from_config(returns, config)
+    centre_mu = resolve_expected_returns(estimator, returns, observed_cov)
+    centre_config = copy.deepcopy(config)
+    centre_config.expected_returns = centre_mu.to_dict()
     point_estimate = efficient_frontier(
-        config,
-        covariance_from_config(returns, config),
-        expected_returns=(
-            pd.Series(config.expected_returns) if config.expected_returns else None
-        ),
+        centre_config,
+        observed_cov,
+        expected_returns=centre_mu,
         returns=returns,
         n_points=n_points,
     )
@@ -229,19 +249,10 @@ def bootstrap_frontier(
             draw_config = copy.deepcopy(config)
             cov = covariance_from_config(sample, config)
             if reestimate_expected_returns:
-                mu = expected_returns_from_history(
-                    sample,
-                    method=expected_return_method_for_estimator(
-                        config.expected_returns_method
-                    ),
-                    periods_per_year=config.periods_per_year,
-                    span=config.ema_span,
-                    risk_free_rate=config.optimizer.risk_free_rate,
-                    cov_matrix=cov,
-                )
-                draw_config.expected_returns = mu.to_dict()
+                mu = resolve_expected_returns(estimator, sample, cov)
             else:
-                mu = pd.Series(config.expected_returns)
+                mu = centre_mu
+            draw_config.expected_returns = mu.to_dict()
 
             frontier = efficient_frontier(
                 draw_config, cov, expected_returns=mu, returns=sample,
