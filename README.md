@@ -1313,6 +1313,11 @@ claim, which of it this engine implements, and — the part usually left out —
 which of it was read and deliberately deferred, with the reason. If you want to
 know why there is no EVaR here yet, that is where it says so.
 
+## Authors
+
+Alan Vazquez ([@alanvaa06](https://github.com/alanvaa06)) and Eduardo Ramos, CFA
+([@EERamos](https://github.com/EERamos)).
+
 ## License
 
 MIT — see [LICENSE](https://github.com/alanvaa06/finport-optengine/blob/main/LICENSE).
