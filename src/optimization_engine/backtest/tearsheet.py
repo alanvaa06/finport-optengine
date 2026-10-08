@@ -19,6 +19,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from optimization_engine.backtest.positions import (
@@ -110,7 +111,13 @@ class Tearsheet:
         return "\n".join(lines)
 
 
-def _caveats(run: RunResult, deflated: Any, overfitting: Any) -> tuple[str, ...]:
+def _caveats(
+    run: RunResult,
+    deflated: Any,
+    overfitting: Any,
+    deflation_note: str | None = None,
+    deflation_failed: bool = False,
+) -> tuple[str, ...]:
     caveats: list[str] = []
     if not run.meta.is_out_of_sample:
         caveats.append(
@@ -159,11 +166,18 @@ def _caveats(run: RunResult, deflated: Any, overfitting: Any) -> tuple[str, ...]
             "opening solve failed and there was no book to carry forward. They "
             "are in this track record at a zero return, not dropped from it."
         )
-    if deflated is None:
+    if deflation_failed:
+        caveats.append(
+            f"{deflation_note} The Sharpe ratio is undeflated; if this "
+            "configuration was chosen from several, it is optimistic."
+        )
+    elif deflated is None:
         caveats.append(
             "No trial count was supplied, so the Sharpe ratio is undeflated. If "
             "this configuration was chosen from several, it is optimistic."
         )
+    elif deflation_note:
+        caveats.append(deflation_note)
     if overfitting is not None and getattr(overfitting, "pbo", 0.0) > 0.5:
         caveats.append(
             "The in-sample winner lands below the out-of-sample median more "
@@ -193,8 +207,15 @@ def build_tearsheet(
         n_trials: How many configurations were tried before this one. Supply
             it and the Sharpe gets deflated; leave it out and the tearsheet
             says the number is undeflated rather than pretending otherwise.
+            A deflation that cannot run on these inputs leaves
+            ``deflated_sharpe`` at ``None`` and says why in the caveats and in
+            ``metadata["deflation_note"]``.
         trial_sharpes: The trials' annualized Sharpes, when available. Their
-            dispersion is what the deflation actually uses.
+            dispersion is what the deflation actually uses. Fewer than two
+            finite values have no dispersion; the deflation then falls back to
+            this run's own sampling variance, as
+            :func:`~optimization_engine.analytics.selection.deflated_sharpe_ratio`
+            does when no trials are kept, and a caveat says so.
         overfitting: A pre-computed CSCV report from a sweep.
         top_drawdowns: How many drawdown episodes to table.
         shocks: Stress scenarios to apply to the book the run ended on — the
@@ -220,19 +241,46 @@ def build_tearsheet(
     drawdowns = drawdown_table(run.returns, top=top_drawdowns)
 
     deflated = None
+    deflation_note: str | None = None
+    deflation_failed = False
     if n_trials is not None and n_trials >= 1:
-        from optimization_engine.analytics.selection import deflated_sharpe_ratio
+        from optimization_engine.analytics import selection
 
+        trials = trial_sharpes
+        if trials is not None:
+            supplied = pd.Series(trials, dtype=float)
+            usable = int(np.isfinite(supplied.to_numpy()).sum())
+            if usable < 2:
+                # The documented fallback of ``deflated_sharpe_ratio`` when
+                # the trials were not kept. A sweep that left one survivor
+                # still tried every cell, and deflating against that count
+                # with a cruder dispersion beats not deflating at all.
+                deflation_note = (
+                    f"Only {usable} of the {len(supplied)} trial Sharpe(s) supplied "
+                    "is usable, which has no dispersion, so the deflation against "
+                    f"{int(n_trials)} trials used this run's own sampling variance "
+                    "rather than the spread of the trials."
+                )
+                trials = None
         try:
-            deflated = deflated_sharpe_ratio(
+            deflated = selection.deflated_sharpe_ratio(
                 run.returns,
                 n_trials=int(n_trials),
-                trial_sharpes=trial_sharpes,
+                trial_sharpes=trials,
                 riskfree_rate=riskfree_rate,
                 periods_per_year=run.periods_per_year,
             )
-        except Exception:  # noqa: BLE001 — a missing correction is reported, not raised
+        except ValueError as exc:
+            # The one exception the deflation raises for inputs it cannot use.
+            # It used to be swallowed with everything else, and the caveat
+            # then said no trial count had been supplied. Anything other than
+            # a ValueError is a bug, and travels.
             deflated = None
+            deflation_failed = True
+            deflation_note = (
+                f"A trial count of {int(n_trials)} was supplied, but the Sharpe "
+                f"ratio could not be deflated: {exc}"
+            )
 
     episodes = position_episodes(run.weights, returns)
 
@@ -254,11 +302,14 @@ def build_tearsheet(
         deflated_sharpe=deflated,
         overfitting=overfitting,
         stress=stress,
-        caveats=_caveats(run, deflated, overfitting),
+        caveats=_caveats(
+            run, deflated, overfitting, deflation_note, deflation_failed
+        ),
         metadata={
             "spec_hash": run.meta.spec_hash,
             "result_hash": run.meta.result_hash,
             "n_trials": n_trials,
+            "deflation_note": deflation_note,
             "stress_as_of": stress_as_of,
         },
     )

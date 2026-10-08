@@ -157,3 +157,100 @@ def test_the_underwater_charts_start_from_the_starting_capital(opens_losing):
     relative = plot_relative_wealth(opens_losing, flat)
     high_water_mark = relative.data[0].y
     assert high_water_mark[0] == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# 2. A deflation that could not run says why, instead of "no trial count"
+# ---------------------------------------------------------------------------
+#
+# build_tearsheet caught every exception from the deflation and set it to
+# None, and the caveat then read "No trial count was supplied" — for a run
+# whose caller had supplied forty.
+
+
+@pytest.fixture()
+def oos_run():
+    from optimization_engine.backtest.runner import run_backtest
+    from optimization_engine.backtest.spec import BacktestSpec
+
+    rng = np.random.default_rng(7)
+    assets = pd.DataFrame(
+        rng.normal(0.0004, 0.01, (300, 2)), index=_days(300), columns=["A", "B"]
+    )
+    run = run_backtest(
+        assets, pd.Series({"A": 0.5, "B": 0.5}), BacktestSpec(is_out_of_sample=True)
+    )
+    return run, assets
+
+
+def _trial_caveats(sheet) -> list[str]:
+    return [c for c in sheet.caveats if "trial" in c.lower()]
+
+
+@pytest.mark.parametrize(
+    "trials",
+    [pd.Series([0.8]), pd.Series([np.nan, np.nan, np.nan])],
+    ids=["one survivor", "no usable trial"],
+)
+def test_too_few_trial_sharpes_fall_back_to_the_sampling_variance(oos_run, trials):
+    from optimization_engine.analytics.selection import deflated_sharpe_ratio
+    from optimization_engine.backtest.tearsheet import build_tearsheet
+
+    run, assets = oos_run
+    sheet = build_tearsheet(run, assets, n_trials=40, trial_sharpes=trials)
+
+    assert sheet.deflated_sharpe is not None
+    assert sheet.deflated_sharpe.n_trials == 40
+    expected = deflated_sharpe_ratio(
+        run.returns, n_trials=40, periods_per_year=run.periods_per_year
+    )
+    assert sheet.deflated_sharpe.deflated == pytest.approx(expected.deflated)
+
+    caveats = _trial_caveats(sheet)
+    assert not any("No trial count was supplied" in c for c in caveats)
+    assert any("sampling variance" in c and "40" in c for c in caveats)
+    assert sheet.metadata["deflation_note"]
+
+
+def test_a_deflation_that_cannot_run_says_why(oos_run, monkeypatch):
+    import optimization_engine.analytics.selection as selection
+    from optimization_engine.backtest.tearsheet import build_tearsheet
+
+    def refuse(*args, **kwargs):
+        raise ValueError("Need at least 3 observations; got 2.")
+
+    monkeypatch.setattr(selection, "deflated_sharpe_ratio", refuse)
+    run, assets = oos_run
+    sheet = build_tearsheet(run, assets, n_trials=40)
+
+    assert sheet.deflated_sharpe is None
+    caveats = _trial_caveats(sheet)
+    assert not any("No trial count was supplied" in c for c in caveats)
+    assert any(
+        "could not be deflated" in c and "Need at least 3 observations" in c and "40" in c
+        for c in caveats
+    )
+    assert "Need at least 3 observations" in sheet.metadata["deflation_note"]
+
+
+def test_an_unexpected_failure_in_the_deflation_is_not_swallowed(oos_run, monkeypatch):
+    import optimization_engine.analytics.selection as selection
+    from optimization_engine.backtest.tearsheet import build_tearsheet
+
+    def crash(*args, **kwargs):
+        raise RuntimeError("a bug, not an input the deflation cannot use")
+
+    monkeypatch.setattr(selection, "deflated_sharpe_ratio", crash)
+    run, assets = oos_run
+    with pytest.raises(RuntimeError, match="a bug"):
+        build_tearsheet(run, assets, n_trials=40)
+
+
+def test_no_trial_count_still_says_so(oos_run):
+    from optimization_engine.backtest.tearsheet import build_tearsheet
+
+    run, assets = oos_run
+    sheet = build_tearsheet(run, assets)
+    assert sheet.deflated_sharpe is None
+    assert any("No trial count was supplied" in c for c in sheet.caveats)
+    assert sheet.metadata["deflation_note"] is None
