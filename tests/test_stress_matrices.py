@@ -148,3 +148,34 @@ def test_the_shipped_liquidity_squeeze_says_what_it_models():
     ]
     assert "cannot produce" not in squeeze.notes
     assert "correlation" in squeeze.notes.lower()
+
+
+def test_the_shipped_liquidity_squeeze_breaks_diversification_down():
+    """Its notes say every diversifier loses at once, and now its risk does.
+
+    With the scalar alone every book's volatility rose by the same √6.25. A
+    correlation shift leaves a one-asset book at that ratio and lifts a
+    spread book above it, and a shift of at least one half leaves no pair
+    negatively correlated whatever the estimate: ``(1 + ρ) / 2 ≥ 0``.
+    """
+    from optimization_engine import covariance_matrix, prices_to_returns, sample_dataset
+
+    squeeze = {s.name: s for s in load_shocks(ROOT / "config" / "shocks.yaml")}[
+        "Liquidity squeeze"
+    ]
+    assert squeeze.correlation_shift is not None
+    assert 0.5 <= squeeze.correlation_shift < 1.0
+
+    cov = covariance_matrix(prices_to_returns(sample_dataset()))
+    assets = list(cov.columns)
+    spread = pd.Series(1.0 / len(assets), index=assets)
+    single = pd.Series(0.0, index=assets)
+    single["US_Equity"] = 1.0
+    alone = stress_test(single, [squeeze], cov_matrix=cov).worst.volatility_ratio
+    spread_ratio = stress_test(spread, [squeeze], cov_matrix=cov).worst.volatility_ratio
+    assert alone == pytest.approx(2.5)
+    assert spread_ratio > 2.5 * 1.2
+
+    stressed = squeeze.stressed_covariance(cov).to_numpy()
+    vols = np.sqrt(np.diag(stressed))
+    assert (stressed / np.outer(vols, vols)).min() >= -1e-12

@@ -95,10 +95,12 @@ shocks:
     notes: >-
       Every diversifier loses at once: the moves are modest but they are all
       the same sign, gold included, because it is what can be sold. Small P&L,
-      large risk multiple. The risk clause scales every volatility by 2.5 and
-      leaves the estimated correlations as they are, so it does not model
-      correlations rising; a correlation_shift would.
-    covariance_scale: 6.25       # volatilities ×2.5, correlations unchanged
+      large risk multiple. Volatilities scale by 2.5 and every correlation
+      moves halfway to +1, so c becomes (1 + c)/2. Halfway is the smallest
+      shift that leaves no pair negatively correlated whatever the estimate:
+      no position hedges another when everything is being sold.
+    covariance_scale: 6.25       # volatilities ×2.5
+    correlation_shift: 0.5       # every correlation halfway to +1
     returns:
       US_Equity:     -0.11
       Intl_Equity:   -0.12

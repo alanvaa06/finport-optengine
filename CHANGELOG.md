@@ -467,6 +467,16 @@ with what to do about it.
   save and the stress run. Validation stays in the library: a shift outside
   [0, 1], or one beside a replacement matrix, is refused on the page with the
   library's own `StressError` message.
+- **"Liquidity squeeze" in `config/shocks.yaml` now moves correlations, so
+  its numbers change.** It adds `correlation_shift: 0.5` and keeps
+  `covariance_scale: 6.25` and every return. The notes-only fix under Changed
+  said the scenario did not model correlations rising; now it does. One half
+  is the smallest shift that leaves no pair negatively correlated whatever
+  the estimate, since `(1 + ρ)/2 ≥ 0`. The P&L is unchanged and the stressed
+  volatility rises: in `optengine optimize --config
+  config/example_multi_asset.yaml --sample --stress config/shocks.yaml` it
+  goes from 29.34% (×2.50) to 35.43% (×3.02). A single-asset book still moves
+  by ×2.50.
 
 ### Security
 
