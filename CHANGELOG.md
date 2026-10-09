@@ -13,6 +13,14 @@ with what to do about it.
 
 ### Fixed
 
+- **Biweekly and other off-band dates were annualized as daily.** Spacing
+  between the five known bands fell back to the config's 252 without a word,
+  so a fortnightly NAV series reported volatility about 3.1 times and returns
+  about 9.7 times too high. Biweekly (26 a year) and semiannual (2) dates are
+  now recognised, and a spacing that matches no band — intraday bars, every
+  20 days, an irregular series — is refused with `FrequencyMismatchError`
+  (exit 2 in the CLI, a `ToolError` over MCP) unless the config sets
+  `periods_per_year` or the panel came through an ingest interval.
 - **The CLI no longer optimizes synthetic data when `--prices` is forgotten.**
   `optimize --config c.yaml --json` exited 0 with plausible weights on the
   built-in sample panel and nothing anywhere saying so. `optimize`, `backtest`

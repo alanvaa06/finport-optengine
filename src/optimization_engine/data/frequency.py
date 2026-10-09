@@ -10,10 +10,13 @@ tell.
 The dates already say which it is. :func:`resolve_periods_per_year` decides
 the factor in one place, in this order: a value the config states, checked
 against the dates; then the ingest interval the panel was fetched at, checked
-the same way; then the spacing of the dates themselves; and only when none of
-those can say, the config's default. A stated value or an interval that the
-dates contradict is refused rather than overridden, because either way one of
-the two inputs is not what its author thinks it is.
+the same way; then the spacing of the dates themselves; and only when there
+are no dates to measure, the config's default. A stated value or an interval
+that the dates contradict is refused rather than overridden, because either
+way one of the two inputs is not what its author thinks it is. Dates spaced
+like no frequency the module knows, with nothing stated, are refused too: the
+default there would be a guess, and 252 on fortnightly data is the same error
+as 252 on monthly data.
 """
 
 from __future__ import annotations
@@ -27,7 +30,12 @@ from optimization_engine.ingest.spec import INTERVALS
 
 
 class FrequencyMismatchError(ValueError):
-    """A stated ``periods_per_year`` or interval contradicts the data's dates."""
+    """The data's dates contradict a stated frequency, or name none at all.
+
+    Raised when a stated ``periods_per_year`` or ingest interval disagrees
+    with the spacing of the dates, and when that spacing matches no known
+    frequency and nothing states one.
+    """
 
 
 class _Band(NamedTuple):
@@ -50,8 +58,12 @@ class _Band(NamedTuple):
 _BANDS: tuple[_Band, ...] = (
     _Band("daily", 0.5, 4.0, 252, (240, 366)),
     _Band("weekly", 5.0, 9.0, 52, (48, 53)),
+    # Fortnightly NAVs. Semi-monthly dates (the 1st and the 15th) have the
+    # same median spacing and 24 periods a year, so 24 is accepted when stated.
+    _Band("biweekly", 13.0, 16.0, 26, (24, 26)),
     _Band("monthly", 26.0, 35.0, 12, (12, 12)),
     _Band("quarterly", 85.0, 96.0, 4, (4, 4)),
+    _Band("semiannual", 175.0, 190.0, 2, (2, 2)),
     _Band("annual", 350.0, 380.0, 1, (1, 1)),
 )
 
@@ -86,9 +98,10 @@ def infer_periods_per_year(index: pd.Index) -> int | None:
         index: The dates of a price or return panel.
 
     Returns:
-        252, 52, 12, 4 or 1 for daily, weekly, monthly, quarterly or annual
-        spacing; ``None`` when the index is not dates, has fewer than three of
-        them, or is spaced like none of those.
+        252, 52, 26, 12, 4, 2 or 1 for daily, weekly, biweekly, monthly,
+        quarterly, semiannual or annual spacing; ``None`` when the index is
+        not dates, has fewer than three of them, or is spaced like none of
+        those.
     """
     band, _ = _band_for(index)
     return band.periods_per_year if band is not None else None
@@ -111,7 +124,8 @@ def resolve_periods_per_year(
         interval: The ingest interval the panel was fetched at (a key of
             :data:`~optimization_engine.ingest.spec.INTERVALS`), or ``None``
             when it did not come through an ingest.
-        default: The value to fall back on when nothing else can say.
+        default: The value to fall back on when there are no dates to
+            measure: ``index`` is not dates, or holds fewer than three.
 
     Returns:
         ``(periods_per_year, note)``. The note is one sentence naming where a
@@ -120,7 +134,10 @@ def resolve_periods_per_year(
 
     Raises:
         FrequencyMismatchError: When ``stated`` or ``interval`` implies a
-            frequency the dates' spacing contradicts.
+            frequency the dates' spacing contradicts; or when neither is
+            given and the dates are spaced like no frequency in the bands —
+            intraday bars, an irregular series, every 20 days — so that
+            ``default`` would be a guess.
     """
     band, spacing = _band_for(index)
     seen = (
@@ -163,6 +180,18 @@ def resolve_periods_per_year(
             else ""
         )
         return band.periods_per_year, note
+    if spacing is not None:
+        # Measured, and like nothing known. Falling back here is what
+        # annualized a fortnightly NAV on 252 without a word.
+        raise FrequencyMismatchError(
+            f"The dates are a median {spacing:.4g} days apart, which matches "
+            f"no frequency the engine knows ({', '.join(b.label for b in _BANDS)}), "
+            "and the config does not set periods_per_year. Annualizing on the "
+            f"default {default} would be a guess, and every annualized "
+            "volatility, return and Sharpe would be off by however wrong it is. "
+            "Set periods_per_year in the config to the number of these periods "
+            "in a year."
+        )
     return default, ""
 
 

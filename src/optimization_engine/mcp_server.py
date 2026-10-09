@@ -418,7 +418,11 @@ def _source(sample: bool, prices_path: str | None) -> dict[str, Any]:
 
 
 def _annualize(config: Any, config_path: str | None, index: pd.Index) -> None:
-    """Set the annualization factor from the dates, refusing a contradiction."""
+    """Set the annualization factor from the dates, refusing a contradiction.
+
+    Dates spaced like no known frequency are refused too when the config
+    states no ``periods_per_year``: the default would be a guess.
+    """
     from optimization_engine.config import stated_keys
     from optimization_engine.data.frequency import (
         FrequencyMismatchError,
