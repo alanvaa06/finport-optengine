@@ -420,7 +420,8 @@ with what to do about it.
   it while the report used the flag.
 - **`config/shocks.yaml`.** The "Liquidity squeeze" notes said the scenario
   modelled diversification breaking down. Its scalar clause scales
-  volatilities only, and the notes now say so. The numbers are unchanged.
+  volatilities only, and the notes now say so. The scenario now also moves
+  correlations, and its numbers change: see "Liquidity squeeze" under Added.
 
 ### Added
 
@@ -454,8 +455,7 @@ with what to do about it.
   moves every book's volatility by the same `√scale`. On the sample
   risk-parity book, a shift of 0.5 raises volatility ×1.45 and a shift of 1.0
   ×1.79. It composes with a scalar scale and is refused beside a replacement
-  matrix. The CLI and the library read it; the app's scenario grid carries the
-  scalar multiplier only.
+  matrix. The CLI, the library and the app's scenario grid all carry it.
 - **`expected_return_gaps(expected_returns, assets)`** in
   `optimization_engine.engine`: the assets a vector misses and the names it
   carries that the universe does not hold.
