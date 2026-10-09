@@ -479,7 +479,7 @@ SHOCK_TABLE_COLUMNS = ("Scenario", "Asset", "Shock return")
 #: Columns of the per-scenario grid beside it. These are properties of the
 #: scenario, not of any one leg, so repeating them on every row would let two
 #: rows of the same scenario disagree about the same fact.
-SCENARIO_TABLE_COLUMNS = ("Covariance ×", "Notes")
+SCENARIO_TABLE_COLUMNS = ("Covariance ×", "Correlation shift", "Notes")
 
 
 def empty_shock_table() -> pd.DataFrame:
@@ -504,6 +504,7 @@ def empty_scenario_table() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "Covariance ×": pd.Series(dtype="float"),
+            "Correlation shift": pd.Series(dtype="float"),
             "Notes": pd.Series(dtype="string"),
         },
         index=pd.Index([], dtype="object", name="Scenario"),
@@ -553,6 +554,7 @@ def align_scenario_table(
             if name in previous.index:
                 row = previous.loc[name]
                 frame.loc[name, "Covariance ×"] = row.get("Covariance ×")
+                frame.loc[name, "Correlation shift"] = row.get("Correlation shift")
                 frame.loc[name, "Notes"] = _clean_text(row.get("Notes"))
     frame["Notes"] = frame["Notes"].fillna("")
     return frame
@@ -576,7 +578,9 @@ def shock_dicts_from_tables(
         One mapping per scenario, in first-seen order, with ``returns`` in the
         order the legs were typed. A leg naming an asset twice in the same
         scenario keeps the last value, which is what an editor's user means by
-        typing it again.
+        typing it again. ``correlation_shift`` is present only when its cell
+        is filled, as :meth:`~optimization_engine.stress.Shock.to_dict` writes
+        it: a blank cell is no shift, not a shift of zero.
     """
     ordered: list[str] = []
     returns: dict[str, dict[str, float]] = {}
@@ -610,6 +614,9 @@ def shock_dicts_from_tables(
             scale = row.get("Covariance ×")
             if scale is not None and not pd.isna(scale):
                 entry["covariance_scale"] = float(scale)
+            shift = row.get("Correlation shift")
+            if shift is not None and not pd.isna(shift):
+                entry["correlation_shift"] = float(shift)
             entry["notes"] = _clean_text(row.get("Notes"))
         payload.append(entry)
     return payload
@@ -623,8 +630,8 @@ def tables_from_shocks(shocks: Iterable[Any]) -> tuple[pd.DataFrame, pd.DataFram
 
     Args:
         shocks: :class:`~optimization_engine.stress.Shock` objects, or
-            anything exposing ``name``, ``returns``, ``covariance_scale`` and
-            ``notes``.
+            anything exposing ``name``, ``returns``, ``covariance_scale``,
+            ``correlation_shift`` and ``notes``.
 
     Returns:
         ``(shock_rows, scenario_rows)``. A scenario whose ``covariance_scale``
@@ -648,11 +655,13 @@ def tables_from_shocks(shocks: Iterable[Any]) -> tuple[pd.DataFrame, pd.DataFram
                 }
             )
         scale = getattr(shock, "covariance_scale", None)
+        shift = getattr(shock, "correlation_shift", None)
         meta[name] = {
             "Covariance ×": (
                 float(scale) if isinstance(scale, (int, float)) and not isinstance(scale, bool)
                 else np.nan
             ),
+            "Correlation shift": np.nan if shift is None else float(shift),
             "Notes": str(getattr(shock, "notes", "") or ""),
         }
         if name not in order:
@@ -667,6 +676,7 @@ def tables_from_shocks(shocks: Iterable[Any]) -> tuple[pd.DataFrame, pd.DataFram
     scenario_rows["Notes"] = scenario_rows["Notes"].astype("object")
     for name in order:
         scenario_rows.loc[name, "Covariance ×"] = meta[name]["Covariance ×"]
+        scenario_rows.loc[name, "Correlation shift"] = meta[name]["Correlation shift"]
         scenario_rows.loc[name, "Notes"] = meta[name]["Notes"]
     scenario_rows["Notes"] = scenario_rows["Notes"].fillna("")
     return shock_rows, scenario_rows

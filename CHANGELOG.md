@@ -430,7 +430,8 @@ with what to do about it.
   it while the report used the flag.
 - **`config/shocks.yaml`.** The "Liquidity squeeze" notes said the scenario
   modelled diversification breaking down. Its scalar clause scales
-  volatilities only, and the notes now say so. The numbers are unchanged.
+  volatilities only, and the notes now say so. The scenario now also moves
+  correlations, and its numbers change: see "Liquidity squeeze" under Added.
 
 ### Added
 
@@ -464,11 +465,28 @@ with what to do about it.
   moves every book's volatility by the same `√scale`. On the sample
   risk-parity book, a shift of 0.5 raises volatility ×1.45 and a shift of 1.0
   ×1.79. It composes with a scalar scale and is refused beside a replacement
-  matrix. The CLI and the library read it; the app's scenario grid carries the
-  scalar multiplier only.
+  matrix. The CLI, the library and the app's scenario grid all carry it.
 - **`expected_return_gaps(expected_returns, assets)`** in
   `optimization_engine.engine`: the assets a vector misses and the names it
   carries that the universe does not hold.
+- **The app's scenario grid has a "Correlation shift" column** (0 to 1, blank
+  for none). Before, the grid kept only the scalar multiplier, so a
+  `correlation_shift` in an uploaded `shocks.yaml` or a reopened preset was
+  dropped without a word and a correlation-breakdown scenario ran as a
+  volatility scaling. The shift now survives upload, edit, download, preset
+  save and the stress run. Validation stays in the library: a shift outside
+  [0, 1], or one beside a replacement matrix, is refused on the page with the
+  library's own `StressError` message.
+- **"Liquidity squeeze" in `config/shocks.yaml` now moves correlations, so
+  its numbers change.** It adds `correlation_shift: 0.5` and keeps
+  `covariance_scale: 6.25` and every return. The notes-only fix under Changed
+  said the scenario did not model correlations rising; now it does. One half
+  is the smallest shift that leaves no pair negatively correlated whatever
+  the estimate, since `(1 + ρ)/2 ≥ 0`. The P&L is unchanged and the stressed
+  volatility rises: in `optengine optimize --config
+  config/example_multi_asset.yaml --sample --stress config/shocks.yaml` it
+  goes from 29.34% (×2.50) to 35.43% (×3.02). A single-asset book still moves
+  by ×2.50.
 
 ### Security
 
