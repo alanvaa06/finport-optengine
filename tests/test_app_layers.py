@@ -404,6 +404,7 @@ def test_scenarios_survive_a_saved_preset(solved_app):
     )
     meta = solved_app.session_state["stress_scenario_table"]
     meta.loc["Rates repricing", "Covariance ×"] = 2.25
+    meta.loc["Rates repricing", "Correlation shift"] = 0.5
     meta.loc["Rates repricing", "Notes"] = "2022-shaped"
     solved_app.session_state["stress_scenario_table"] = meta
     solved_app.run()
@@ -418,6 +419,7 @@ def test_scenarios_survive_a_saved_preset(solved_app):
             "returns": {"IG_Credit": -0.16, "EM_Equity": -0.20},
             "covariance_scale": 2.25,
             "notes": "2022-shaped",
+            "correlation_shift": 0.5,
         }
     ]
 
@@ -433,6 +435,7 @@ def test_scenarios_survive_a_saved_preset(solved_app):
     assert sorted(restored["Asset"]) == ["EM_Equity", "IG_Credit"]
     restored_meta = solved_app.session_state["stress_scenario_table"]
     assert float(restored_meta.loc["Rates repricing", "Covariance ×"]) == 2.25
+    assert float(restored_meta.loc["Rates repricing", "Correlation shift"]) == 0.5
     assert restored_meta.loc["Rates repricing", "Notes"] == "2022-shaped"
 
     # Leave the page as the other tests expect to find it.
@@ -469,6 +472,106 @@ def test_the_shipped_shock_file_loads_into_the_page(solved_app):
     assert not [e.value for e in solved_app.error]
     cards = _metrics(solved_app)
     assert cards["Worst scenario"] in {s.name for s in expected}
+
+    solved_app.file_uploader(key="stress_upload").set_value(None).run()
+    solved_app.session_state["stress_shock_table"] = empty_shock_table()
+    solved_app.session_state["stress_scenario_table"] = empty_scenario_table()
+    solved_app.run()
+
+
+def _capture_downloads(monkeypatch) -> dict[str, bytes]:
+    """Record every file the page hands a download button, by file name.
+
+    ``AppTest`` keeps a download's bytes in a media store it throws away at
+    the end of each run, so they are recorded on the way in — which is
+    exactly the file a browser would save.
+    """
+    from streamlit.runtime.media_file_manager import MediaFileManager
+
+    captured: dict[str, bytes] = {}
+    original = MediaFileManager.add
+
+    def add(self, path_or_data, *args, **kwargs):
+        name = kwargs.get("file_name")
+        if name is not None and isinstance(path_or_data, bytes):
+            captured[name] = path_or_data
+        return original(self, path_or_data, *args, **kwargs)
+
+    monkeypatch.setattr(MediaFileManager, "add", add)
+    return captured
+
+
+def _stress_report_text(at: AppTest) -> str:
+    """The "report as text" block the Stress tab printed."""
+    texts = [t.value for t in at.text if t.value.startswith("Stressed ")]
+    assert len(texts) == 1, texts
+    return texts[0]
+
+
+def test_a_correlation_shift_survives_upload_edit_download_and_run(
+    solved_app, monkeypatch
+):
+    """The grid used to drop it, so a breakdown scenario only scaled vols."""
+    import pandas as pd
+    from components import empty_scenario_table, empty_shock_table
+
+    from optimization_engine.stress import (
+        Shock,
+        dump_shocks_yaml,
+        load_shocks_yaml,
+        stress_test,
+    )
+
+    downloads = _capture_downloads(monkeypatch)
+    uploaded = [
+        Shock(
+            "Correlation breakdown",
+            {"US_Equity": -0.12, "Intl_Equity": -0.14, "US_Treasuries": -0.02},
+            covariance_scale=2.25,
+            correlation_shift=0.5,
+        ),
+        Shock("Vols only", {"US_Equity": -0.05}, covariance_scale=2.25),
+    ]
+    solved_app.file_uploader(key="stress_upload").set_value(
+        ("breakdown.yaml", dump_shocks_yaml(uploaded).encode("utf-8"), "text/yaml")
+    ).run()
+    _no_exception(solved_app)
+
+    meta = solved_app.session_state["stress_scenario_table"]
+    assert meta.loc["Correlation breakdown", "Correlation shift"] == 0.5
+    assert pd.isna(meta.loc["Vols only", "Correlation shift"])
+
+    # Edit: a stronger breakdown, and a shift typed onto the other scenario.
+    meta.loc["Correlation breakdown", "Correlation shift"] = 0.8
+    meta.loc["Vols only", "Correlation shift"] = 0.25
+    solved_app.session_state["stress_scenario_table"] = meta
+    solved_app.run()
+    _no_exception(solved_app)
+    assert not [e.value for e in solved_app.error]
+
+    # Download: the file carries what the grid now says.
+    saved = load_shocks_yaml(downloads["shocks.yaml"].decode("utf-8"))
+    assert {s.name: s.correlation_shift for s in saved} == {
+        "Correlation breakdown": 0.8,
+        "Vols only": 0.25,
+    }
+    assert {s.name: s.covariance_scale for s in saved} == {
+        "Correlation breakdown": 2.25,
+        "Vols only": 2.25,
+    }
+
+    # Run: the report on the page is the library's report for those shocks,
+    # and not the one it gives with the shifts left out.
+    run = solved_app.session_state["last_run"]
+    expected = stress_test(run.result.weights, list(saved), cov_matrix=run.cov_matrix)
+    unshifted = stress_test(
+        run.result.weights,
+        [Shock(s.name, s.returns, s.covariance_scale, s.notes) for s in saved],
+        cov_matrix=run.cov_matrix,
+    )
+    page = _stress_report_text(solved_app)
+    assert page == expected.describe()
+    assert page != unshifted.describe()
 
     solved_app.file_uploader(key="stress_upload").set_value(None).run()
     solved_app.session_state["stress_shock_table"] = empty_shock_table()

@@ -459,6 +459,14 @@ with what to do about it.
 - **`expected_return_gaps(expected_returns, assets)`** in
   `optimization_engine.engine`: the assets a vector misses and the names it
   carries that the universe does not hold.
+- **The app's scenario grid has a "Correlation shift" column** (0 to 1, blank
+  for none). Before, the grid kept only the scalar multiplier, so a
+  `correlation_shift` in an uploaded `shocks.yaml` or a reopened preset was
+  dropped without a word and a correlation-breakdown scenario ran as a
+  volatility scaling. The shift now survives upload, edit, download, preset
+  save and the stress run. Validation stays in the library: a shift outside
+  [0, 1], or one beside a replacement matrix, is refused on the page with the
+  library's own `StressError` message.
 
 ### Security
 

@@ -2256,6 +2256,16 @@ with tab_stress:
                     "base covariance, so 4.00 doubles every volatility with "
                     "correlations unchanged. Blank leaves risk unstressed.",
                 ),
+                # No min/max here: an out-of-range value is the library's to
+                # refuse, and its message is shown below the grid.
+                "Correlation shift": st.column_config.NumberColumn(
+                    format="%.2f",
+                    help="What the scenario does to *diversification*: every "
+                    "correlation moves this fraction of the way to +1 and "
+                    "every volatility stays, so 0.50 takes a correlation of "
+                    "0.2 to 0.6. Between 0 and 1, applied before the "
+                    "multiplier. Blank leaves correlations alone.",
+                ),
                 "Notes": st.column_config.TextColumn(
                     help="Where the numbers came from, or which episode they "
                     "are calibrated to. Carried into the report."

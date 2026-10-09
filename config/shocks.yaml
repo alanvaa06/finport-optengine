@@ -21,9 +21,10 @@
 # under the scenario, not only what it loses on the day. Because correlations
 # do not move, every book's volatility moves by the same √scale. To make
 # diversification fail as well, add ``correlation_shift: s``, which moves every
-# correlation s of the way to +1 and keeps every volatility (the CLI and the
-# library read it; the app's scenario grid holds the scalar only). A full
-# matrix in place of the scalar must be positive semi-definite.
+# correlation s of the way to +1 and keeps every volatility (the CLI, the
+# library and the app's scenario grid all read it). A full matrix in place of
+# the scalar must be positive semi-definite, cannot be combined with a
+# correlation_shift, and is read by the CLI and the library only.
 
 schema_version: 1
 

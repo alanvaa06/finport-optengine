@@ -148,6 +148,7 @@ def test_the_per_scenario_grid_follows_a_rename_rather_than_shadowing_it():
     )
     meta = align_scenario_table(rows, None)
     meta.loc["Crash", "Covariance ×"] = 4.0
+    meta.loc["Crash", "Correlation shift"] = 0.5
     meta.loc["Crash", "Notes"] = "2008-shaped"
 
     renamed = rows.copy()
@@ -156,6 +157,7 @@ def test_the_per_scenario_grid_follows_a_rename_rather_than_shadowing_it():
 
     assert list(after.index) == ["Drawdown", "Squeeze"]
     assert pd.isna(after.loc["Drawdown", "Covariance ×"])
+    assert pd.isna(after.loc["Drawdown", "Correlation shift"])
     assert after.loc["Drawdown", "Notes"] == ""
 
 
@@ -165,6 +167,7 @@ def test_a_multiplier_survives_an_edit_that_does_not_rename_it():
     )
     meta = align_scenario_table(rows, None)
     meta.loc["Crash", "Covariance ×"] = 4.0
+    meta.loc["Crash", "Correlation shift"] = 0.5
     meta.loc["Crash", "Notes"] = "2008-shaped"
 
     extended = pd.concat(
@@ -182,9 +185,61 @@ def test_a_multiplier_survives_an_edit_that_does_not_rename_it():
     )
     after = align_scenario_table(extended, meta)
     assert after.loc["Crash", "Covariance ×"] == 4.0
+    assert after.loc["Crash", "Correlation shift"] == 0.5
     payload = shock_dicts_from_tables(extended, after)
     assert payload[0]["covariance_scale"] == 4.0
+    assert payload[0]["correlation_shift"] == 0.5
     assert payload[0]["notes"] == "2008-shaped"
+
+
+def test_a_correlation_shift_round_trips_through_the_grids():
+    """It used to be dropped: a breakdown scenario came back scaling vols only."""
+    from optimization_engine.stress import Shock
+
+    shocks = [
+        Shock("Breakdown", {"US_Equity": -0.2}, covariance_scale=2.25, correlation_shift=0.5),
+        Shock("Shift only", {"Gold": -0.05}, correlation_shift=0.0),
+        Shock("Plain", {"US_Equity": -0.1}, covariance_scale=1.5),
+    ]
+    rows, meta = tables_from_shocks(shocks)
+    assert meta.loc["Breakdown", "Correlation shift"] == 0.5
+    assert meta.loc["Shift only", "Correlation shift"] == 0.0
+    assert pd.isna(meta.loc["Plain", "Correlation shift"])
+
+    rebuilt = shocks_from_dicts(shock_dicts_from_tables(rows, meta))
+    assert [s.to_dict() for s in rebuilt] == [s.to_dict() for s in shocks]
+
+
+def test_a_blank_correlation_shift_is_no_shift_rather_than_zero():
+    """Blank means the scenario says nothing about correlations."""
+    rows = pd.DataFrame(
+        {"Scenario": ["Crash"], "Asset": ["US_Equity"], "Shock return": [-0.3]}
+    )
+    payload = shock_dicts_from_tables(rows, align_scenario_table(rows, None))
+    assert "correlation_shift" not in payload[0]
+    assert shocks_from_dicts(payload)[0].correlation_shift is None
+
+
+def _library_refusal(entry: dict) -> str:
+    """The message ``Shock.from_dict`` raises for ``entry``, word for word."""
+    from optimization_engine.stress import Shock, StressError
+
+    with pytest.raises(StressError) as caught:
+        Shock.from_dict(entry)
+    return str(caught.value)
+
+
+def test_a_correlation_shift_outside_zero_to_one_is_refused_in_the_library_s_words():
+    rows = pd.DataFrame(
+        {"Scenario": ["Too far"], "Asset": ["US_Equity"], "Shock return": [-0.3]}
+    )
+    meta = align_scenario_table(rows, None)
+    meta.loc["Too far", "Correlation shift"] = 1.5
+    payload = shock_dicts_from_tables(rows, meta)
+
+    usable, problems = validated_shock_dicts(payload)
+    assert usable == []
+    assert problems == [f"Too far: {_library_refusal(payload[0])}"]
 
 
 def test_something_that_is_not_a_scenario_is_named_rather_than_dropped():
