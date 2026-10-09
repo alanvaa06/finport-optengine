@@ -326,7 +326,7 @@ def _require_market_return(calibrate: bool, market_return: float | None) -> None
     if calibrate and market_return is None:
         raise ConfigurationError(
             "calibrate_risk_aversion is set but no market_return was given. "
-            "Calibration implies δ from the market's Sharpe ratio, so it needs "
+            "Calibration implies delta from the market's Sharpe ratio, so it needs "
             "the market's expected return (bl_market_return in the config). "
             "Supply one, or turn calibration off to use risk_aversion as set."
         )
@@ -442,8 +442,8 @@ def black_litterman_posterior(
             f"uncertainty by: {detail}, below {_MIN_VIEW_VARIANCE:g}. The "
             "default view uncertainty is the prior variance of the view's own "
             "portfolio, so a pick portfolio the covariance holds at zero "
-            "variance — a spread between assets it treats as identical, or a "
-            "row of zero coefficients — has no uncertainty to state, and the "
+            "variance - a spread between assets it treats as identical, or a "
+            "row of zero coefficients - has no uncertainty to state, and the "
             "prior cannot be blended with it either: it is singular in that "
             "direction. Drop the view, or state it over assets the covariance "
             "tells apart."

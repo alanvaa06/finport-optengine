@@ -669,7 +669,7 @@ class UniverseRules:
         if self.hold_through:
             lines.append(
                 f"    Held through {len(self.hold_through)} reconstitution(s), "
-                f"{self.hold_through[0]} … {self.hold_through[-1]}."
+                f"{self.hold_through[0]} ... {self.hold_through[-1]}."
             )
         declared = [p.name for p in self.panels if p.name in set(self.panel_names)]
         if declared:

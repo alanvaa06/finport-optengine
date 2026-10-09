@@ -71,7 +71,7 @@ class MinVarianceOptimizer(BaseOptimizer):
             self._diagnostics["invested_fraction"] = invested
             self._diagnostics["budget_note"] = (
                 f"With an open budget the lowest-variance book invests "
-                f"{invested:.2%} of capital — only what the weight floors "
+                f"{invested:.2%} of capital - only what the weight floors "
                 "force. Set fully_invested=True for the minimum-variance "
                 "portfolio, or use mean_variance to trade return for risk."
             )

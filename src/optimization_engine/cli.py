@@ -133,7 +133,7 @@ def _build_parser() -> argparse.ArgumentParser:
     optimize.add_argument(
         "--detone", type=int, default=None, metavar="K",
         help="Remove the K leading eigenvectors (the market component) after "
-             "denoising. Makes the covariance singular — use only with the "
+             "denoising. Makes the covariance singular - use only with the "
              "clustering methods (hrp, herc, nco).",
     )
     optimize.add_argument(
@@ -155,7 +155,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     optimize.add_argument(
         "--benchmark", metavar="SPEC",
-        help="Benchmark to measure — and optionally optimize — against. Use "
+        help="Benchmark to measure - and optionally optimize - against. Use "
              "'equal_weight' for 1/N, an asset name for a single-asset index, "
              "or 'none' to override the config. Omit to use the config's own "
              "benchmark block.",
@@ -230,14 +230,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     backtest.add_argument(
         "--rebalance-every", type=int, metavar="N",
-        help="Periods between re-solves — the re-optimization cadence. "
+        help="Periods between re-solves - the re-optimization cadence. "
              "Defaults to one quarter.",
     )
     backtest.add_argument(
         "--rebalance", default="none",
         choices=["none", "daily", "weekly", "monthly", "quarterly", "annual"],
         help="How often the book is traded back to the current target "
-             "*between* re-solves — the rebalancing cadence, which is a "
+             "*between* re-solves - the rebalancing cadence, which is a "
              "separate decision from --rebalance-every. Defaults to 'none': "
              "hold each solution untouched until the next one and let the "
              "weights drift. A committee that re-solves quarterly but "
@@ -269,7 +269,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "(default) uses --impact-participation and needs no volume data "
             "at all, which is what lets an index universe be backtested. "
             "'adv' derives it from traded volume, falling back to the fixed "
-            "rate — and saying so — for any asset that has none."
+            "rate - and saying so - for any asset that has none."
         ),
     )
     backtest.add_argument(
@@ -297,7 +297,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     backtest.add_argument(
         "--execution-lag", type=int, default=1, metavar="N",
-        help="Periods between a decision and its fill. Defaults to 1 — a desk "
+        help="Periods between a decision and its fill. Defaults to 1 - a desk "
              "does not trade on a close it has not seen. Pass 0 to hold each "
              "book from its decision date: the walk-forward decides from the "
              "bar before, so 0 fills at the very close it decided on (the "
@@ -330,7 +330,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Refuse a solved book that breaches the mandate. Read the "
              "warning on --strict-mandate for `optimize` first: inside a "
              "walk-forward a refused window is caught per-window and recorded "
-             "as a failed solve, so this does not stop the run — it turns "
+             "as a failed solve, so this does not stop the run - it turns "
              "non-compliant windows into carried-forward ones, counted in "
              "the 'solve(s) failed' line.",
     )
@@ -351,7 +351,7 @@ def _build_parser() -> argparse.ArgumentParser:
              "'exclude' (the default) treats it as ineligible and prints how "
              "many cells that silently removed; 'include' admits a name "
              "nothing screened; 'raise' refuses to guess and stops the run. "
-             "The library API has no default here on purpose — the CLI picks "
+             "The library API has no default here on purpose - the CLI picks "
              "one because a non-interactive run cannot ask, and then says "
              "what the choice cost.",
     )
@@ -553,8 +553,8 @@ def _load_universe_for(args: argparse.Namespace, returns, prices):
         print(
             f"  Universe: {cells} date/asset cell(s) across {bars} bar(s) and "
             f"{len(names)} name(s) were not evaluable, and the {policy!r} "
-            f"policy — not a screen — {verdict}: "
-            f"{', '.join(names[:5])}{' …' if len(names) > 5 else ''}.",
+            f"policy - not a screen - {verdict}: "
+            f"{', '.join(names[:5])}{' ...' if len(names) > 5 else ''}.",
             file=sys.stderr,
         )
     else:
@@ -578,9 +578,9 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
     if _load_stress_into(config, args) != 0:
         return 2
     for issue in quality.errors:
-        print(f"Data error — {issue.describe()}", file=sys.stderr)
+        print(f"Data error - {issue.describe()}", file=sys.stderr)
     for issue in quality.warnings:
-        print(f"Data warning — {issue.describe()}", file=sys.stderr)
+        print(f"Data warning - {issue.describe()}", file=sys.stderr)
     if quality.errors and args.strict:
         return _fail(
             args,
@@ -626,12 +626,12 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
                 "\n  A tracking-error or active-share budget is in force. A "
                 "benchmark holding an asset your bounds cap below its index "
                 "weight sets a floor on tracking error that no allocation can "
-                "go below — raise the limit, or relax the bound."
+                "go below - raise the limit, or relax the bound."
             )
         return _fail(args, message)
 
     for warning in run.warnings:
-        print(f"Warning — {warning}", file=sys.stderr)
+        print(f"Warning - {warning}", file=sys.stderr)
 
     if run.stress is not None:
         print(run.stress.describe())
@@ -675,8 +675,8 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
     )
     if run.diagnostics is not None:
         print(
-            f"  {run.diagnostics.n_positions} position(s) · effective N "
-            f"{run.diagnostics.effective_n:.1f} · diversification ratio "
+            f"  {run.diagnostics.n_positions} position(s) | effective N "
+            f"{run.diagnostics.effective_n:.1f} | diversification ratio "
             f"{run.diagnostics.diversification_ratio:.2f}"
         )
     _report_layer_exposures(run)
@@ -727,7 +727,7 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
             print(f"  {selection.describe()}")
             for name, row in selection.ranking().iterrows():
                 print(
-                    f"    {name:<18} weight RMSE {row['weight_rmse']:.2%} · "
+                    f"    {name:<18} weight RMSE {row['weight_rmse']:.2%} | "
                     f"worst position {row['max_weight_drift']:.2%}"
                 )
     if out is not None:
@@ -788,7 +788,7 @@ def _apply_benchmark_flags(
             raise BenchmarkError(
                 f"--benchmark {value!r} is neither a benchmark kind nor an "
                 f"asset in the universe ({', '.join(assets[:8])}"
-                f"{' …' if len(assets) > 8 else ''}). Use 'equal_weight', an "
+                f"{' ...' if len(assets) > 8 else ''}). Use 'equal_weight', an "
                 "asset name, or define the benchmark in the config."
             )
     if getattr(args, "max_tracking_error", None) is not None:
@@ -817,12 +817,12 @@ def _report_layer_exposures(run) -> None:
                     if pd.notna(row["effective_min"]) and row["effective_min"] > 0
                     else "0%"
                 )
-                limits = f" / limit {floor}–{row['effective_max']:.1%}"
+                limits = f" / limit {floor}-{row['effective_max']:.1%}"
                 if row["basis"] == "parent":
                     limits += (
-                        f" ({row['min']:.0%}–{row['max']:.0%} of {row['parent']})"
+                        f" ({row['min']:.0%}-{row['max']:.0%} of {row['parent']})"
                     )
-            mark = "  ←binding" if row["binding"] else ""
+            mark = "  <-binding" if row["binding"] else ""
             print(f"    {row['bucket']:<24} {row['weight']:>7.2%}{limits}{mark}")
 
 
@@ -841,11 +841,11 @@ def _report_versus_benchmark(run, config):
         return None
     h = report.headline()
     print(
-        f"  vs {run.benchmark_label}: excess {h['excess_return']:+.2%} · "
-        f"T.E. {h['tracking_error']:.2%} · IR {h['information_ratio']:.2f} · "
+        f"  vs {run.benchmark_label}: excess {h['excess_return']:+.2%} | "
+        f"T.E. {h['tracking_error']:.2%} | IR {h['information_ratio']:.2f} | "
         f"beta {h['beta']:.2f}"
         + (
-            f" · active share {h['active_share']:.1%}"
+            f" | active share {h['active_share']:.1%}"
             if "active_share" in h
             else ""
         )
@@ -888,7 +888,7 @@ def _report_deflated_sharpe(returns, args: argparse.Namespace, config) -> None:
         return
     if needed == float("inf"):
         print(
-            "  Minimum track record: unreachable — this Sharpe does not "
+            "  Minimum track record: unreachable - this Sharpe does not "
             "exceed the selection-bias threshold at any sample length."
         )
     else:
@@ -1091,9 +1091,9 @@ def _run_ingest(args: argparse.Namespace):
     result = ingest(_ingest_request_from(args), **options)
     print(f"Ingest: {result.summary()}")
     for outcome in result.failed:
-        print(f"  ! {outcome.identifier}: {outcome.status} — {outcome.message}")
+        print(f"  ! {outcome.identifier}: {outcome.status} - {outcome.message}")
     for note in result.warnings:
-        print(f"  · {note}")
+        print(f"  - {note}")
     return result
 
 
@@ -1302,7 +1302,7 @@ def _prepare_inputs(args: argparse.Namespace) -> _Inputs | int:
         # On stderr, like the alignment log: under --json it is the only
         # stream a person reads, and the payload carries the same fact.
         print(
-            "  Data: a synthetic panel — the numbers below describe no market.",
+            "  Data: a synthetic panel - the numbers below describe no market.",
             file=sys.stderr,
         )
 
@@ -1818,7 +1818,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
         cov, len(returns), config.covariance_method, config.ewma_lambda
     )
     print(
-        f"T/N = {diag.observations_per_asset:.1f} · "
+        f"T/N = {diag.observations_per_asset:.1f} | "
         f"condition number = {diag.condition_number:.3g}"
     )
     denoise_report = cov.attrs.get("denoise_report")
@@ -1872,7 +1872,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
         # return target had been validated against a reachable range that was
         # never computed.
         print(
-            "Reachable expected return: not computed — "
+            "Reachable expected return: not computed - "
             "the range needs a solver and none answered."
         )
 
@@ -1923,7 +1923,7 @@ def _cmd_providers(args: argparse.Namespace) -> int:
         )
         print(f"    intervals: {', '.join(row['intervals'])}")
         print(
-            f"    volume:    {'yes' if row['serves_volume'] else 'no — index-style levels only'}"
+            f"    volume:    {'yes' if row['serves_volume'] else 'no - index-style levels only'}"
         )
         print(f"    key:       {row['key_label']}")
         if row["signup_url"]:
@@ -1956,7 +1956,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     written = _write_panel(Path(args.output), result.prices)
     if written is None:
         return 2
-    print(f"Wrote {args.output} ({result.prices.shape[0]} rows × "
+    print(f"Wrote {args.output} ({result.prices.shape[0]} rows x "
           f"{result.prices.shape[1]} series)")
 
     if args.volume_output:
@@ -1996,7 +1996,7 @@ def _write_panel(path: Path, frame: pd.DataFrame) -> Path | None:
         except ImportError:
             print(
                 "Writing Parquet needs pyarrow, which is not installed. "
-                'Install it with: pip install -e ".[data]" — or write .csv '
+                'Install it with: pip install -e ".[data]" - or write .csv '
                 "or .xlsx instead.",
                 file=sys.stderr,
             )
@@ -2021,7 +2021,7 @@ def _cmd_sample_data(args: argparse.Namespace) -> int:
     else:
         print(f"Unsupported output extension: {out.suffix}", file=sys.stderr)
         return 2
-    print(f"Wrote {out} ({prices.shape[0]} rows × {prices.shape[1]} cols)")
+    print(f"Wrote {out} ({prices.shape[0]} rows x {prices.shape[1]} cols)")
     return 0
 
 
@@ -2043,7 +2043,7 @@ def _cmd_fred(args: argparse.Namespace) -> int:
     else:
         print(f"Unsupported output extension: {out.suffix}", file=sys.stderr)
         return 2
-    print(f"Wrote {out} ({df.shape[0]} rows × {df.shape[1]} series)")
+    print(f"Wrote {out} ({df.shape[0]} rows x {df.shape[1]} series)")
     return 0
 
 

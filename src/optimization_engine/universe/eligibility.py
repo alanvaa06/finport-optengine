@@ -166,7 +166,7 @@ def collapse(frame: pd.DataFrame, policy: str) -> pd.DataFrame:
             raise UniverseError(
                 f"{total} cell(s) are not evaluable and the policy is 'raise': "
                 f"{', '.join(where)}"
-                f"{' …' if total > len(where) else ''}. A rule with a warm-up "
+                f"{' ...' if total > len(where) else ''}. A rule with a warm-up "
                 "period always has some; pass 'exclude' or 'include' to say "
                 "what they mean."
             )
@@ -803,7 +803,7 @@ class Eligibility:
         evaluated = pd.Timestamp(index[position])
         state = _state_at(self.rule, evaluated, label)
         text = (
-            f"{label} on {stamp.date()}: {_VERDICTS[state]} — "
+            f"{label} on {stamp.date()}: {_VERDICTS[state]} - "
             f"{_reason(self.rule, evaluated, label)}."
         )
         if evaluated != stamp:

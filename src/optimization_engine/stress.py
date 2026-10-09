@@ -333,10 +333,10 @@ class Shock:
         if isinstance(self.covariance_scale, pd.DataFrame):
             risk = "; covariance replaced"
         elif self.covariance_scale is not None:
-            risk = f"; covariance ×{cast(float, self.covariance_scale):.2f}"
+            risk = f"; covariance x{cast(float, self.covariance_scale):.2f}"
         if self.correlation_shift is not None:
             risk += f"; correlations {self.correlation_shift:.0%} of the way to 1"
-        tail = f" — {self.notes}" if self.notes else ""
+        tail = f" - {self.notes}" if self.notes else ""
         return f"{self.name}: {moves or 'no shocks'}{risk}{tail}"
 
 
@@ -415,7 +415,7 @@ class ScenarioStress:
         if self.stressed_volatility is not None:
             vol = f"vol {self.stressed_volatility:.2%}"
             if self.volatility_ratio is not None:
-                vol += f" (×{self.volatility_ratio:.2f})"
+                vol += f" (x{self.volatility_ratio:.2f})"
             parts.append(vol)
         top = self.largest_contributor
         if top is not None:
@@ -732,7 +732,7 @@ def _normalize_covariance_scale(name: str, scale: CovarianceScale) -> Covariance
         if value < 0.0:
             raise StressError(
                 f"Shock {name!r}: covariance_scale is {value}. A negative multiple "
-                "of a covariance matrix is not a covariance matrix — variances "
+                "of a covariance matrix is not a covariance matrix - variances "
                 "would come out negative."
             )
         return value
@@ -776,7 +776,7 @@ def _normalize_covariance_scale(name: str, scale: CovarianceScale) -> Covariance
     if float(eigenvalues.min()) < -tolerance:
         raise StressError(
             f"Shock {name!r}: the stressed covariance is not positive "
-            f"semi-definite — its smallest eigenvalue is {eigenvalues.min():.3g}, "
+            f"semi-definite - its smallest eigenvalue is {eigenvalues.min():.3g}, "
             "so some book would have a negative variance. Repair it (for "
             "instance with nearest_psd), or express a correlation breakdown "
             "as a correlation_shift, which is valid by construction."

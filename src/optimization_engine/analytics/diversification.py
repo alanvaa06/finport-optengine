@@ -192,7 +192,7 @@ class DiversificationReport:
             f"{self.effective_number_of_bets:.2f} effective bets out of "
             f"{self.n_factors} possible ({self.concentration:.0%} of the "
             f"maximum), on the {self.model.replace('_', '-')} factors. The "
-            f"largest single bet — the factor tracking {top} — carries "
+            f"largest single bet - the factor tracking {top} - carries "
             f"{self.largest_bet:.0%} of portfolio variance."
         )
 

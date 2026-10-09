@@ -132,7 +132,7 @@ class HRPOptimizer(BaseOptimizer):
                 "which generally disagrees with a hand-specified one. The "
                 "layered bucket budgets will be met by projecting the result "
                 "onto the constraint set, which moves it away from HRP's own "
-                "answer — use risk_parity or mean_variance to have them "
+                "answer - use risk_parity or mean_variance to have them "
                 "enforced inside the solve.",
                 stacklevel=3,
             )
@@ -176,7 +176,7 @@ class HRPOptimizer(BaseOptimizer):
             self._diagnostics["bounds_note"] = (
                 f"Constraints moved {drift:.2%} of the book away from the raw "
                 "HRP allocation. HRP applies them by projection, so a large "
-                "distance means the mandate — not the hierarchy — is driving "
+                "distance means the mandate - not the hierarchy - is driving "
                 "the result."
             )
         return projected

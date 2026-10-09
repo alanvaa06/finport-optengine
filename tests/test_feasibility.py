@@ -105,7 +105,7 @@ def test_feasibility_gross_cap_below_the_box_minimum():
 
     found = issue(report, "leverage_below_box_minimum")
     assert found.fatal
-    assert "1.20×" in found.message and "1.00×" in found.message
+    assert "1.20x" in found.message and "1.00x" in found.message
 
 
 def test_feasibility_layer_capacity():

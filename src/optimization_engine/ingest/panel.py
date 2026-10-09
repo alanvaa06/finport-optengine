@@ -72,8 +72,8 @@ class SeriesMeta:
             engine-side identifier otherwise.
         """
         label = self.name or self.identifier
-        venue = f" · {self.exchange}" if self.exchange else ""
-        ccy = f" · {self.currency}" if self.currency else ""
+        venue = f" | {self.exchange}" if self.exchange else ""
+        ccy = f" | {self.currency}" if self.currency else ""
         return f"{label} ({self.kind.value}{ccy}{venue}) via {self.provider}"
 
 
@@ -289,10 +289,10 @@ class PricePanel:
             rows.append(
                 {
                     "identifier": identifier,
-                    "provider": meta.provider if meta else "—",
+                    "provider": meta.provider if meta else "-",
                     "symbol": meta.provider_symbol if meta else identifier,
                     "kind": (meta.kind if meta else F.InstrumentKind.UNKNOWN).value,
-                    "currency": (meta.currency if meta else None) or "—",
+                    "currency": (meta.currency if meta else None) or "-",
                     "observations": int(series.shape[0]),
                     "first_date": series.index.min() if not series.empty else pd.NaT,
                     "last_date": series.index.max() if not series.empty else pd.NaT,

@@ -116,7 +116,7 @@ class CDaROptimizer(BaseOptimizer):
             raise ValueError(
                 "The return history contains missing values. CDaR accumulates "
                 "an equity curve, so a gap silently shifts every later "
-                "drawdown — align the panel first."
+                "drawdown - align the panel first."
             )
         self.returns = returns
         self.alpha = float(alpha)

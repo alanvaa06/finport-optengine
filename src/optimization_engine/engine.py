@@ -283,7 +283,7 @@ class EngineRun:
             raise ValueError(
                 "This run has no position-based benchmark, so there are no "
                 "active positions to analyze. Choose a benchmark defined by "
-                "weights (1/N, a single asset, or a custom vector) — an "
+                "weights (1/N, a single asset, or a custom vector) - an "
                 "external index has no holdings in this universe."
             )
         return pd.Series(weights).reindex(assets).fillna(0.0)
@@ -926,7 +926,7 @@ class EngineRun:
         end = self.returns.index.max()
         return {
             "optimizer": spec.name,
-            "objective_mode": self.result.extras.get("mode", "—"),
+            "objective_mode": self.result.extras.get("mode", "-"),
             "covariance_estimator": self.config.covariance_method,
             "ewma_lambda": (
                 self.config.ewma_lambda
@@ -948,7 +948,7 @@ class EngineRun:
             "fully_invested": self.config.fully_invested,
             "leverage_cap": self.config.leverage,
             "turnover_limit": self.config.turnover_limit,
-            "benchmark": (self.benchmark_label or "—"),
+            "benchmark": (self.benchmark_label or "-"),
             "benchmark_kind": (
                 self.benchmark.spec.kind if self.benchmark is not None else "none"
             ),
@@ -962,7 +962,7 @@ class EngineRun:
                     for lyr in self.constraint_layers
                     if lyr.is_active
                 )
-                or "—"
+                or "-"
             ),
             "solver": self.result.extras.get("solver"),
             "solver_status": self.result.extras.get("solver_status"),
@@ -1093,7 +1093,7 @@ def _resolve_expected_returns(
     if missing:
         warnings.warn(
             f"resolve_expected_returns: no expected return for {len(missing)} asset(s) "
-            f"({', '.join(missing[:5])}{' …' if len(missing) > 5 else ''}); "
+            f"({', '.join(missing[:5])}{' ...' if len(missing) > 5 else ''}); "
             "assuming 0.0. A zero expected return is an active view, not a "
             "neutral one.",
             UserWarning,

@@ -100,7 +100,7 @@ class MethodRequirements:
                 "This method allocates first and applies the constraints "
                 "afterwards, by projecting onto the closest feasible "
                 "allocation. Bounds and group budgets do hold, but a binding "
-                "one moves the result away from the method's own answer — the "
+                "one moves the result away from the method's own answer - the "
                 "distance moved is reported with the result."
             ),
             "hard_or_projected": (
@@ -108,7 +108,7 @@ class MethodRequirements:
                 "which is where this method normally answers. If that solve "
                 "fails numerically it falls back to an unconstrained solve "
                 "plus a projection, and then the bounds hold only "
-                "approximately — the result reports which of the two "
+                "approximately - the result reports which of the two "
                 "happened, and how far the projection moved it."
             ),
         }[self.bounds_mode]
@@ -122,12 +122,12 @@ _RISK_BUDGET = ExtraInput(
 _BL_VIEWS = ExtraInput(
     key="bl_views", label="Black-Litterman views",
     kind="view_table", required=False,
-    help="Asset → annualized expected return.",
+    help="Asset -> annualized expected return.",
 )
 _BL_VIEW_CONFIDENCES = ExtraInput(
-    key="bl_view_confidences", label="View confidences (Ω diagonal)",
+    key="bl_view_confidences", label="View confidences (Omega diagonal)",
     kind="view_table", required=False,
-    help="Variance of each view's error term. Defaults to tau · σ_i².",
+    help="Variance of each view's error term. Defaults to tau * sigma_i^2.",
 )
 _BL_TAU = ExtraInput(
     key="bl_tau", label="Tau (prior uncertainty scale)",
@@ -137,12 +137,12 @@ _BL_TAU = ExtraInput(
 _BL_MARKET_CAPS = ExtraInput(
     key="bl_market_caps", label="Market caps / weights",
     kind="market_caps", required=False,
-    help="Equilibrium market portfolio. Empty → equal weights.",
+    help="Equilibrium market portfolio. Empty -> equal weights.",
 )
 _CVAR_ALPHA = ExtraInput(
-    key="cvar_alpha", label="CVaR tail probability α",
+    key="cvar_alpha", label="CVaR tail probability alpha",
     kind="scalar", required=False, default=0.05,
-    help="0.05 ⇒ 95% CVaR.",
+    help="0.05 => 95% CVaR.",
 )
 _HRP_LINKAGE = ExtraInput(
     key="hrp_linkage", label="HRP linkage method",
@@ -165,7 +165,7 @@ _N_CLUSTERS = ExtraInput(
     kind="scalar", required=False, default=None,
     help=(
         "Force a cluster count. Empty selects it by maximizing the silhouette "
-        "t-statistic — the ONC criterion."
+        "t-statistic - the ONC criterion."
     ),
 )
 _MAX_CLUSTERS = ExtraInput(
@@ -197,7 +197,7 @@ _NCO_DETONE = ExtraInput(
     ),
 )
 _CDAR_ALPHA = ExtraInput(
-    key="cdar_alpha", label="CDaR tail probability α",
+    key="cdar_alpha", label="CDaR tail probability alpha",
     kind="scalar", required=False, default=0.05,
     help="0.05 averages the worst 5% of the drawdown path.",
 )
@@ -223,7 +223,7 @@ REQUIREMENTS: dict[str, MethodRequirements] = {
         ),
         assumptions=(
             "Investors care only about the mean and variance of returns.",
-            "The expected-return vector is accurate — results are famously "
+            "The expected-return vector is accurate - results are famously "
             "sensitive to it, so small estimation errors produce very "
             "different portfolios.",
             "The covariance matrix is stable over the holding period.",
@@ -245,7 +245,7 @@ REQUIREMENTS: dict[str, MethodRequirements] = {
         ),
         assumptions=(
             "Only risk matters; expected returns are ignored entirely.",
-            "The covariance matrix is well estimated — with T/N below ~10 even "
+            "The covariance matrix is well estimated - with T/N below ~10 even "
             "this portfolio is unstable.",
         ),
     ),
@@ -264,11 +264,11 @@ REQUIREMENTS: dict[str, MethodRequirements] = {
             "separately by blending it with cash."
         ),
         assumptions=(
-            "Expected returns are accurate — the tangency portfolio is the "
+            "Expected returns are accurate - the tangency portfolio is the "
             "most estimation-sensitive point on the whole frontier.",
             "You can borrow and lend at the risk-free rate.",
             "Some allocation the mandate allows earns more than the "
-            "risk-free rate — for a long-only book, at least one asset must.",
+            "risk-free rate - for a long-only book, at least one asset must.",
             "A turnover budget cannot be imposed on this solve.",
         ),
     ),
@@ -286,13 +286,13 @@ REQUIREMENTS: dict[str, MethodRequirements] = {
             "total risk."
         ),
         when_to_use=(
-            "You want risk, not capital, spread evenly — the standard answer "
+            "You want risk, not capital, spread evenly - the standard answer "
             "when a 60/40 book's equity sleeve dominates its risk."
         ),
         assumptions=(
             "Expected returns are ignored; only the covariance matters.",
             "Equalizing risk contributions is a good proxy for a good "
-            "portfolio — true when Sharpe ratios are similar across assets.",
+            "portfolio - true when Sharpe ratios are similar across assets.",
             "Weights must be long-only for risk contributions to be well "
             "defined.",
         ),
@@ -307,7 +307,7 @@ REQUIREMENTS: dict[str, MethodRequirements] = {
         supports_frontier=False, supports_turnover=False,
         extras=(_HRP_LINKAGE,),
         summary=(
-            "Cluster assets by correlation, then split risk down the tree — "
+            "Cluster assets by correlation, then split risk down the tree - "
             "no matrix inversion anywhere."
         ),
         when_to_use=(
@@ -315,7 +315,7 @@ REQUIREMENTS: dict[str, MethodRequirements] = {
             "is close to singular. This is the robust choice when T/N is small."
         ),
         assumptions=(
-            "The correlation hierarchy it finds is economically meaningful — "
+            "The correlation hierarchy it finds is economically meaningful - "
             "check the reported clusters.",
             "Group budgets cannot be enforced; the method has its own "
             "hierarchy and will disagree with a hand-specified one.",
@@ -343,7 +343,7 @@ REQUIREMENTS: dict[str, MethodRequirements] = {
             "drawdown or tail risk, not variance, is the measure that matters."
         ),
         assumptions=(
-            "The correlation hierarchy is economically meaningful — check the "
+            "The correlation hierarchy is economically meaningful - check the "
             "reported clusters and the silhouette score.",
             "The chosen number of clusters is a real feature of the data, not "
             "of the linkage rule. A silhouette near zero means it is not.",
@@ -401,9 +401,9 @@ REQUIREMENTS: dict[str, MethodRequirements] = {
         ),
         assumptions=(
             "The market-cap portfolio you supply is in equilibrium.",
-            "Views are expressed with an honest confidence — an over-confident "
+            "Views are expressed with an honest confidence - an over-confident "
             "view will dominate the posterior.",
-            "The risk-aversion coefficient δ sets the level of the prior; "
+            "The risk-aversion coefficient delta sets the level of the prior; "
             "calibrate it to an observed market Sharpe rather than guessing.",
         ),
     ),
@@ -418,16 +418,16 @@ REQUIREMENTS: dict[str, MethodRequirements] = {
         supports_frontier=True, supports_turnover=True,
         extras=(_CVAR_ALPHA,), risk_measure="CVaR",
         summary=(
-            "Minimize the average loss in the worst α of scenarios, straight "
+            "Minimize the average loss in the worst alpha of scenarios, straight "
             "from the return history."
         ),
         when_to_use=(
             "Returns are visibly skewed or fat-tailed and variance is the "
-            "wrong risk measure — credit, options overlays, EM debt."
+            "wrong risk measure - credit, options overlays, EM debt."
         ),
         assumptions=(
             "The historical scenarios represent the tail you actually face.",
-            "Enough observations fall in the tail to estimate it: at α = 5% "
+            "Enough observations fall in the tail to estimate it: at alpha = 5% "
             "you are averaging roughly T/20 scenarios.",
             "Scenarios are equally likely and drawn from one regime.",
         ),
@@ -443,12 +443,12 @@ REQUIREMENTS: dict[str, MethodRequirements] = {
         supports_frontier=True, supports_turnover=True,
         extras=(_CDAR_ALPHA,), risk_measure="CDaR",
         summary=(
-            "Minimize the average of the worst α of drawdowns along the "
+            "Minimize the average of the worst alpha of drawdowns along the "
             "realized path."
         ),
         when_to_use=(
-            "The mandate is written in drawdown terms — a stop-loss, a "
-            "high-water mark, a client who redeems at −20%. Variance and CVaR "
+            "The mandate is written in drawdown terms - a stop-loss, a "
+            "high-water mark, a client who redeems at -20%. Variance and CVaR "
             "are both order-independent and cannot see how long the book "
             "stayed underwater."
         ),
@@ -480,7 +480,7 @@ REQUIREMENTS: dict[str, MethodRequirements] = {
             "by-product, without taking a view on returns."
         ),
         assumptions=(
-            "Expected returns are proportional to volatility — the condition "
+            "Expected returns are proportional to volatility - the condition "
             "under which max-diversification is also mean-variance optimal.",
             "The correlation structure is stable; the objective is driven "
             "entirely by it.",
@@ -501,7 +501,7 @@ REQUIREMENTS: dict[str, MethodRequirements] = {
             "nothing, so it has no estimation error to be wrong about."
         ),
         assumptions=(
-            "The universe is deliberately constructed — 1/N inherits whatever "
+            "The universe is deliberately constructed - 1/N inherits whatever "
             "concentration is in the asset list itself.",
             "Bounds and group budgets are applied by projection afterwards, so "
             "a binding one makes the result something other than 1/N.",
@@ -527,7 +527,7 @@ REQUIREMENTS: dict[str, MethodRequirements] = {
             "limit and this spends exactly that budget."
         ),
         assumptions=(
-            "The benchmark is the right one — every number this produces is "
+            "The benchmark is the right one - every number this produces is "
             "measured against it, so a badly chosen index makes a good "
             "portfolio look wrong and vice versa.",
             "Expected returns are accurate in *relative* terms; only the "
@@ -551,7 +551,7 @@ REQUIREMENTS: dict[str, MethodRequirements] = {
             "off-diagonal terms of the covariance matrix."
         ),
         assumptions=(
-            "Correlations are ignored entirely — this equals true risk parity "
+            "Correlations are ignored entirely - this equals true risk parity "
             "only when every pair is equally correlated.",
             "Bounds and group budgets are applied by projection afterwards.",
         ),

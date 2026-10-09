@@ -93,7 +93,7 @@ __all__ = [
 
 warnings.warn(
     "optimization_engine.scenarios has been renamed to "
-    "optimization_engine.presets — it holds saved configurations, not stress "
+    "optimization_engine.presets - it holds saved configurations, not stress "
     "scenarios, which are now in optimization_engine.stress. Every old name "
     "still resolves here (Scenario is Preset), and the file format is "
     "unchanged. This module is removed one release after 0.7.0.",

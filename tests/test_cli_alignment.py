@@ -240,7 +240,7 @@ def test_the_script_aligns_the_way_the_cli_does(tmp_path):
         cwd=str(ROOT),
     )
     assert proc.returncode == 0, proc.stderr
-    assert "Alignment —" in proc.stderr
+    assert "Alignment:" in proc.stderr
     assert str(N_LATE) in proc.stderr
 
 

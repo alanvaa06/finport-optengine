@@ -55,7 +55,7 @@ class DataIssue:
             scoped to one.
         """
         where = f"{self.asset}: " if self.asset else ""
-        return f"{where}{self.message} → {self.suggestion}"
+        return f"{where}{self.message} -> {self.suggestion}"
 
 
 @dataclass
@@ -114,7 +114,7 @@ class DataQualityReport:
         """
         if not self.issues:
             return "No data-quality issues found."
-        return "\n".join(f"• {i.describe()}" for i in self.issues)
+        return "\n".join(f"* {i.describe()}" for i in self.issues)
 
 
 def _longest_repeat_run(series: pd.Series) -> int:
@@ -261,7 +261,7 @@ def analyze_prices(
                     "interior_gaps", str(asset),
                     f"{n_missing} missing value(s) inside its own history "
                     f"({share:.1%}).",
-                    "Forward-fill, interpolate, or drop the asset — gaps make "
+                    "Forward-fill, interpolate, or drop the asset - gaps make "
                     "each pairwise covariance rest on a different sample.",
                 )
             )
@@ -290,7 +290,7 @@ def analyze_prices(
                 DataIssue(
                     "warning", "extreme_returns", str(asset),
                     f"{n_extreme} period(s) with a move beyond "
-                    f"±{EXTREME_RETURN_THRESHOLD:.0%}.",
+                    f"+/-{EXTREME_RETURN_THRESHOLD:.0%}.",
                     "Usually an unadjusted split or dividend rather than a "
                     "market move. Use adjusted prices.",
                 )
@@ -338,7 +338,7 @@ def analyze_prices(
                 DataIssue(
                     "error", "singular_sample", None,
                     f"{n_common} common observations for {n_assets} assets "
-                    "(T ≤ N).",
+                    "(T <= N).",
                     "The sample covariance is singular. Use a shrinkage "
                     "estimator or HRP, or shorten the universe.",
                 )
@@ -349,7 +349,7 @@ def analyze_prices(
                     "warning", "thin_sample", None,
                     f"{n_common} common observations for {n_assets} assets "
                     f"(T/N = {n_common / n_assets:.1f}).",
-                    "Below T/N ≈ 10 the covariance is mostly noise. Prefer "
+                    "Below T/N ~ 10 the covariance is mostly noise. Prefer "
                     "ledoit_wolf/oas shrinkage or HRP over the sample estimator.",
                 )
             )

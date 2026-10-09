@@ -174,7 +174,7 @@ class BenchmarkSpec:
             if str(self.asset) not in assets:
                 raise BenchmarkError(
                     f"Benchmark asset {self.asset!r} is not in the universe "
-                    f"({', '.join(assets[:8])}{' …' if len(assets) > 8 else ''})."
+                    f"({', '.join(assets[:8])}{' ...' if len(assets) > 8 else ''})."
                 )
             w = pd.Series(0.0, index=assets)
             w[str(self.asset)] = 1.0
@@ -188,7 +188,7 @@ class BenchmarkSpec:
                 raise BenchmarkError(
                     f"Benchmark weights name {len(unknown)} asset(s) outside the "
                     f"universe: {', '.join(unknown[:8])}"
-                    f"{' …' if len(unknown) > 8 else ''}."
+                    f"{' ...' if len(unknown) > 8 else ''}."
                 )
             w = pd.Series(self.weights).reindex(assets).fillna(0.0)
 

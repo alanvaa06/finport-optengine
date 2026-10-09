@@ -163,7 +163,7 @@ def fetch_fx_to_base(
         out["USD"] = 1.0
     else:
         if base not in fx_to_usd.columns:
-            raise FXError(f"Could not source base→USD rate for {base}.")
+            raise FXError(f"Could not source base->USD rate for {base}.")
         base_to_usd = fx_to_usd[base]
         out = fx_to_usd.div(base_to_usd, axis=0)
         out[base] = 1.0
@@ -274,7 +274,7 @@ def convert_prices_to_base(
                 f"The {ccy}->{base} rate history starts {first_rate.date()}, "
                 f"more than {MAX_LEADING_FX_GAP} rows after the prices do "
                 f"({prices.index.min().date()}). Trim the panel to where the "
-                "rate exists, or pass fx_rates that cover it — filling the "
+                "rate exists, or pass fx_rates that cover it - filling the "
                 "gap from a later rate would value those prices with "
                 "information from the future."
             )
@@ -310,7 +310,7 @@ def _refuse_stale_rate(rates: pd.Series, dates: pd.DatetimeIndex, pair: str) -> 
     raise FXError(
         f"{int(stale.sum())} price date(s) from {dates[covered][first].date()} "
         f"would be valued at a {pair} rate more than {MAX_STALE_FX_DAYS} "
-        f"business days old — the newest rate before that date is from "
+        f"business days old - the newest rate before that date is from "
         f"{used[first].date()}. Trim the panel to where the rate exists, or "
         "pass fx_rates that cover it; carrying a stopped series forward "
         "removes the currency move from every return after it."

@@ -103,7 +103,7 @@ def build(output: Path) -> None:
             optimizer=OptimizerSpec(name=name, risk_free_rate=0.03, **spec),
         )
 
-    print("efficient frontier…")
+    print("efficient frontier...")
     # A conservative utility portfolio, so its marker does not land on top of
     # the tangency dot and the two read as the different portfolios they are.
     run = run_engine(
@@ -125,7 +125,7 @@ def build(output: Path) -> None:
         height=560,
     )
 
-    print("frontier uncertainty…")
+    print("frontier uncertainty...")
     uncertainty = bootstrap_frontier(
         returns, config("mean_variance"), n_draws=60, n_points=14, seed=0
     )
@@ -139,7 +139,7 @@ def build(output: Path) -> None:
     )
     print(f"    band: {uncertainty.summary()}")
 
-    print("capital vs risk…")
+    print("capital vs risk...")
     rp = run_engine(returns, config("risk_parity"))
     mv = run_engine(returns, config("mean_variance", risk_aversion=4.0))
     decomposition = mv.risk_decomposition()
@@ -153,12 +153,12 @@ def build(output: Path) -> None:
     )
     print(
         f"    mean-variance effective N {mv.diagnostics.effective_n:.1f} "
-        f"(risk {mv.diagnostics.effective_n_risk:.1f}) · "
+        f"(risk {mv.diagnostics.effective_n_risk:.1f}) | "
         f"risk parity {rp.diagnostics.effective_n:.1f} "
         f"(risk {rp.diagnostics.effective_n_risk:.1f})"
     )
 
-    print("walk-forward…")
+    print("walk-forward...")
     chosen = run_engine(returns, config("max_sharpe"))
     # reestimate_expected_returns defaults to True: each window derives its own
     # mu. Reusing the config's full-sample vector would leak the future into
@@ -185,7 +185,7 @@ def build(output: Path) -> None:
         "walk-forward"
     )
 
-    print("relative performance…")
+    print("relative performance...")
     # A mandate written relative to an index: beat 1/N, at no more than 3% of
     # tracking error. The budget is what makes the two curves comparable.
     relative_config = config("mean_variance", risk_aversion=3.0)

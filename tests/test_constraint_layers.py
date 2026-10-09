@@ -337,8 +337,8 @@ def test_a_breach_on_any_layer_is_reported_with_the_layer_that_owns_it():
         constraint_layers=(layer_from_mapping("FX", {"A": "Foreign"}, {"Foreign": 0.10}),),
     )
     labels = [v.label for v in check_constraints(weights, cons)]
-    assert "Asset class · Eq upper bound" in labels
-    assert "FX · Foreign upper bound" in labels
+    assert "Asset class | Eq upper bound" in labels
+    assert "FX | Foreign upper bound" in labels
 
     breaches = layer_breaches(weights, cons.layers)
     assert {b[1] for b in breaches} == {"max"}

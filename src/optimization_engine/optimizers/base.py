@@ -58,8 +58,8 @@ class NonPSDCovarianceError(ValueError):
             f"eigenvalue is {self.min_eigenvalue:.4g} ({share:.2%} of its "
             "trace), so some portfolios would have negative variance and a "
             "solve could report one as optimal. Repair it with "
-            "optimization_engine.nearest_psd — the eigenvalue clipping every "
-            "estimator in data.covariance already applies — or check how it "
+            "optimization_engine.nearest_psd - the eigenvalue clipping every "
+            "estimator in data.covariance already applies - or check how it "
             "was built: pairwise-complete estimates and hand-edited "
             "correlations are the usual causes."
         )
@@ -501,7 +501,7 @@ class BaseOptimizer(ABC):
         weights = np.asarray(weights, dtype=float).flatten()
         if not np.isfinite(weights).all():
             raise RuntimeError(
-                f"{self.name} produced non-finite weights — the problem is "
+                f"{self.name} produced non-finite weights - the problem is "
                 "likely unbounded or numerically degenerate."
             )
         weights = self._clean_weights(weights)
@@ -635,7 +635,7 @@ class BaseOptimizer(ABC):
             warnings.warn(
                 f"{self.name}: no expected return for {len(missing)} asset(s) "
                 f"({', '.join(map(str, missing[:5]))}"
-                f"{' …' if len(missing) > 5 else ''}); assuming 0.0. "
+                f"{' ...' if len(missing) > 5 else ''}); assuming 0.0. "
                 "A zero expected return is an active view, not a neutral one.",
                 stacklevel=3,
             )

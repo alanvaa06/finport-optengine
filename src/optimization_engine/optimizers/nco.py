@@ -489,7 +489,7 @@ class NCOOptimizer(BaseOptimizer):
                     f"A direct solve would invert a matrix with condition number "
                     f"{full_condition:.3g}. NCO instead inverts "
                     f"{assignment.n_clusters} cluster matrices (worst condition "
-                    f"{worst_cluster:.3g}) and one {assignment.n_clusters}×"
+                    f"{worst_cluster:.3g}) and one {assignment.n_clusters}x"
                     f"{assignment.n_clusters} matrix (condition "
                     f"{reduced_condition:.3g})."
                 ),

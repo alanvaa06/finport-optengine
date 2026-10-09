@@ -155,10 +155,10 @@ def mask(secret: str | None) -> str:
         no hint at all.
     """
     if not secret:
-        return "—"
+        return "-"
     if len(secret) < _MIN_LENGTH_TO_HINT:
-        return "•" * min(len(secret), 12)
-    return f"{secret[:3]}…{secret[-4:]}"
+        return "*" * min(len(secret), 12)
+    return f"{secret[:3]}...{secret[-4:]}"
 
 
 @dataclass(frozen=True)
@@ -198,8 +198,8 @@ class KeyStatus:
         if not self.required:
             return "No key needed"
         if self.malformed:
-            return f"{self.env_var} is set but unusable — {self.hint}"
-        return f"Key set ({self.hint})" if self.present else f"Key missing — set {self.env_var}"
+            return f"{self.env_var} is set but unusable - {self.hint}"
+        return f"Key set ({self.hint})" if self.present else f"Key missing - set {self.env_var}"
 
 
 def key_status(provider: str, *, required: bool, signup_url: str | None = None) -> KeyStatus:

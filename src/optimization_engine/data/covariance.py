@@ -37,9 +37,9 @@ ExpectedReturnMethod = Literal[
 #: analyst can see the assumption they are buying into.
 COVARIANCE_DESCRIPTIONS: dict[str, str] = {
     "sample": (
-        "Unbiased sample covariance. Unbiased but noisy: needs T ≫ N "
+        "Unbiased sample covariance. Unbiased but noisy: needs T >> N "
         "observations or the matrix becomes ill-conditioned (and singular "
-        "once T ≤ N)."
+        "once T <= N)."
     ),
     "ledoit_wolf": (
         "Ledoit-Wolf shrinkage toward a scaled identity. Well-conditioned "
@@ -48,7 +48,7 @@ COVARIANCE_DESCRIPTIONS: dict[str, str] = {
     ),
     "oas": (
         "Oracle Approximating Shrinkage. Like Ledoit-Wolf but with a "
-        "shrinkage intensity tuned for Gaussian data — usually shrinks "
+        "shrinkage intensity tuned for Gaussian data - usually shrinks "
         "harder on short samples."
     ),
     "shrink": (
@@ -57,7 +57,7 @@ COVARIANCE_DESCRIPTIONS: dict[str, str] = {
     ),
     "ewma": (
         "RiskMetrics exponentially-weighted covariance. Reacts fast to "
-        "regime changes; effective sample is only ~1/(1−λ) observations, "
+        "regime changes; effective sample is only ~1/(1-lambda) observations, "
         "so it is noisier than it looks."
     ),
     "semi": (
@@ -68,7 +68,7 @@ COVARIANCE_DESCRIPTIONS: dict[str, str] = {
     ),
     "denoised": (
         "Sample covariance with the Marchenko-Pastur noise eigenvalues "
-        "replaced by their average (López de Prado, 2020). Keeps the factor "
+        "replaced by their average (Lopez de Prado, 2020). Keeps the factor "
         "structure intact instead of shrinking it along with the noise, so "
         "it conditions the matrix without flattening the signal."
     ),
@@ -191,8 +191,8 @@ def effective_sample_size(
     if effective == int(n_observations):
         return effective, ""
     return effective, (
-        f"EWMA with λ = {float(ewma_lambda):g} leans on about "
-        f"1/(1−λ) ≈ {exact:.0f} observations regardless of the "
+        f"EWMA with lambda = {float(ewma_lambda):g} leans on about "
+        f"1/(1-lambda) ~ {exact:.0f} observations regardless of the "
         f"{int(n_observations)} rows supplied."
     )
 
@@ -242,14 +242,14 @@ def covariance_diagnostics(
     msgs: list[str] = []
     if n_observations <= n_assets:
         msgs.append(
-            f"Only {n_observations} observations for {n_assets} assets (T ≤ N): "
+            f"Only {n_observations} observations for {n_assets} assets (T <= N): "
             "the sample covariance is singular. Use a shrinkage estimator "
             "(ledoit_wolf / oas) or shorten the universe."
         )
     elif obs_per_asset < 10:
         msgs.append(
             f"Only {obs_per_asset:.1f} observations per asset (T/N). Below ~10, "
-            "covariance estimates are dominated by noise — prefer a shrinkage "
+            "covariance estimates are dominated by noise - prefer a shrinkage "
             "estimator or HRP, which does not invert the matrix."
         )
     if eff_obs < 2 * n_assets:
@@ -260,7 +260,7 @@ def covariance_diagnostics(
     if not np.isfinite(cond) or cond > 1e8:
         msgs.append(
             f"Condition number is {cond:.3g}. The matrix is near-singular, so "
-            "mean-variance weights are unstable — small changes in expected "
+            "mean-variance weights are unstable - small changes in expected "
             "returns will produce very different portfolios."
         )
     elif cond > 1e4:
@@ -410,7 +410,7 @@ def covariance_matrix(
     if returns.isna().any().any():
         raise ValueError(
             "Returns contain missing values. Align or fill the price panel "
-            "before estimating covariance — silently dropping rows would "
+            "before estimating covariance - silently dropping rows would "
             "change the sample each asset is estimated on."
         )
 
@@ -501,7 +501,7 @@ def covariance_from_config(
 
 EXPECTED_RETURN_DESCRIPTIONS: dict[str, str] = {
     "mean": (
-        "Annualized arithmetic mean of realized returns — the single-period "
+        "Annualized arithmetic mean of realized returns - the single-period "
         "expected return mean-variance optimization is defined against. "
         "Simple, but the standard error of a mean estimate is huge: decades "
         "of data are needed to distinguish two assets' means."
@@ -509,7 +509,7 @@ EXPECTED_RETURN_DESCRIPTIONS: dict[str, str] = {
     "geometric_mean": (
         "Annualized geometric (compound) mean of realized returns. This is "
         "the growth rate an investor actually earned, and it is the right "
-        "number for a multi-period question — but it is not the μ a "
+        "number for a multi-period question - but it is not the mu a "
         "single-period mean-variance model wants, and pairing it with an "
         "arithmetic covariance understates every expected return by roughly "
         "half the variance."
@@ -519,7 +519,7 @@ EXPECTED_RETURN_DESCRIPTIONS: dict[str, str] = {
         "but even noisier than the full-sample mean."
     ),
     "capm": (
-        "CAPM-implied returns: rf + β·(market premium). Cross-sectionally "
+        "CAPM-implied returns: rf + beta*(market premium). Cross-sectionally "
         "disciplined, so far more stable than raw historical means."
     ),
     "shrunk_mean": (
@@ -731,7 +731,7 @@ def expected_returns_from_history(
         market_weights = market_weights.reindex(returns.columns).fillna(0.0)
         if float(market_weights.sum()) <= 0:
             raise ValueError(
-                "CAPM market weights sum to zero — cannot define a market "
+                "CAPM market weights sum to zero - cannot define a market "
                 "portfolio."
             )
         market_weights = market_weights / float(market_weights.sum())

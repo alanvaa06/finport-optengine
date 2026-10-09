@@ -133,7 +133,7 @@ def compute_tca(run: RunResult) -> TcaPanel:
     else:
         cost_bps_of_notional = None
         reasons["cost_bps_of_notional"] = (
-            "no traded notional — cost per unit traded is undefined"
+            "no traded notional - cost per unit traded is undefined"
         )
 
     if n_rebalances > 0:
@@ -141,7 +141,7 @@ def compute_tca(run: RunResult) -> TcaPanel:
     else:
         avg_cost_per_rebalance_bps = None
         reasons["avg_cost_per_rebalance_bps"] = (
-            "no rebalances — average cost per trip is undefined"
+            "no rebalances - average cost per trip is undefined"
         )
 
     periods = len(run.returns)
@@ -154,14 +154,14 @@ def compute_tca(run: RunResult) -> TcaPanel:
         cost_drag_bps_annualized = None
     if cost_drag_bps_annualized is None:
         reasons["cost_drag_bps_annualized"] = (
-            "no evaluated periods — annualized drag is undefined"
+            "no evaluated periods - annualized drag is undefined"
         )
 
     if total > 0.0:
         commission_share: float | None = commission / total
     else:
         commission_share = None
-        reasons["commission_share"] = "zero total cost — the split is undefined"
+        reasons["commission_share"] = "zero total cost - the split is undefined"
 
     return TcaPanel(
         total_cost=total,

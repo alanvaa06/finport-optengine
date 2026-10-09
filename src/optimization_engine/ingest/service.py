@@ -145,7 +145,7 @@ class IngestResult:
         span = ""
         if not self.panel.index.empty:
             span = (
-                f", {self.panel.index.min().date()}→{self.panel.index.max().date()}"
+                f", {self.panel.index.min().date()}->{self.panel.index.max().date()}"
             )
         return (
             f"{got}/{asked} identifiers from {source} "
@@ -668,7 +668,7 @@ def _convert_currency(panel: PricePanel, base: str) -> tuple[PricePanel, str, bo
     if unknown:
         note += (
             f" {', '.join(unknown)} declare no currency and were left as they "
-            f"arrived — they are only comparable if they were already in {base}."
+            f"arrived - they are only comparable if they were already in {base}."
         )
     return PricePanel.from_frames(converted, updated), note, False
 
@@ -716,7 +716,7 @@ def _volume_notes(panel: PricePanel, request: IngestRequest) -> list[str]:
     if volume_free:
         notes.append(
             f"{', '.join(volume_free)} are index or rate levels and carry no "
-            "volume by construction — expected, not a gap."
+            "volume by construction - expected, not a gap."
         )
     return notes
 
@@ -741,7 +741,7 @@ def _outcomes_from_panel(
             outcomes.append(
                 IdentifierOutcome(
                     identifier=identifier,
-                    symbol=symbol if claimed else "—",
+                    symbol=symbol if claimed else "-",
                     status=STATUS_UNSUPPORTED,
                     message=(
                         f"Resolves to {symbol!r}, which another identifier in "

@@ -377,7 +377,7 @@ class EngineConfig:
         if not math.isfinite(periods) or periods <= 0:
             raise ConfigurationError(
                 f"periods_per_year must be a positive number of return "
-                f"observations per year — 252 daily, 52 weekly, 12 monthly; got "
+                f"observations per year - 252 daily, 52 weekly, 12 monthly; got "
                 f"{self.periods_per_year!r}. It annualizes the covariance, and a "
                 "zero or negative one makes every risk figure meaningless."
             )

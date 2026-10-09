@@ -359,7 +359,7 @@ def test_cvar_extras_keys(returns: pd.DataFrame, baseline_config: EngineConfig):
         assert extras[old] == extras[new]
     # ζ keeps its own name; it is the VaR, not the objective.
     assert "cvar_solver_zeta" in extras
-    assert f"√{252}" in extras["cvar_note"]
+    assert "sqrt(252)" in extras["cvar_note"]
 
 
 def test_cvar_deprecation_names_both_renamed_keys(

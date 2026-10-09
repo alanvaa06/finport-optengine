@@ -41,7 +41,7 @@ REBALANCE_DESCRIPTIONS: dict[str, str] = {
     ),
     "daily": "Rebalance every period. Zero drift, maximum turnover and cost.",
     "weekly": "Rebalance weekly.",
-    "monthly": "Rebalance monthly — the common institutional default.",
+    "monthly": "Rebalance monthly - the common institutional default.",
     "quarterly": "Rebalance quarterly.",
     "annual": "Rebalance annually. Low cost, large intra-year drift.",
 }
