@@ -8,6 +8,8 @@ the wrong one, which is the kind of error nothing downstream catches.
 
 from __future__ import annotations
 
+import ast
+import re
 import sys
 from pathlib import Path
 
@@ -681,6 +683,80 @@ def test_no_docstring_misstates_a_unit(phrase):
         if phrase in path.read_text(encoding="utf-8")
     ]
     assert not offenders, f"{phrase!r} still appears in {offenders}"
+
+
+# The app and the MCP server kept calling turnover "one-way" after the
+# docstrings were fixed (#42). A UI label is spread over a tuple — label,
+# value, help — so this looks for "one-way" within a few words of "turnover"
+# rather than for fixed phrases. A sentence that converts, "one-way turnover is
+# half of it", says the unit correctly and passes.
+
+_FEW_WORDS = r"(?:\W+\w+){0,4}?\W+"
+_ONE_WAY_TURNOVER = re.compile(
+    rf"one[-\s]way{_FEW_WORDS}\w*turnover|turnover\w*{_FEW_WORDS}one[-\s]way",
+    re.IGNORECASE,
+)
+_SAYS_IT_IS_HALF = re.compile(r"(?:\W+\w+){0,3}?\W+half\b", re.IGNORECASE)
+
+
+def _turnover_called_one_way(text: str) -> list[str]:
+    return [
+        " ".join(match.group(0).split())
+        for match in _ONE_WAY_TURNOVER.finditer(text)
+        if not _SAYS_IT_IS_HALF.match(text, match.end())
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "misstated"),
+    [
+        # The labels on main when #42 was filed.
+        ('"Max one-way turnover", 0.01, 2.0, 0.20, 0.01,', True),
+        ('("Turnover per year", num(bt.annualized_turnover, 2), "One-way."),', True),
+        ('num(report.metadata.get("annualized_turnover"), 2),\n    "One-way.",', True),
+        ('f"One-way turnover versus the anchor: {delta.abs().sum():.2%}"', True),
+        ('pct(diag.turnover),\n    "One-way: the fraction of the book",', True),
+        # Costs are charged per side, and a conversion states the unit.
+        ('"Commission (bps, one-way)", 0, 100, 10,', False),
+        ('"Transaction cost (bps, one-way)", 0, 100, 10, key="perf_cost",', False),
+        ("Two-sided, Σ|Δw|. One-way turnover is half of it.", False),
+    ],
+)
+def test_the_turnover_scan_tells_a_misstated_unit_from_a_correct_one(text, misstated):
+    assert bool(_turnover_called_one_way(text)) is misstated
+
+
+def test_no_app_or_mcp_text_calls_turnover_one_way():
+    surfaces = [
+        *sorted((ROOT / "app").rglob("*.py")),
+        SRC / "optimization_engine" / "mcp_server.py",
+    ]
+    offenders = {
+        path.relative_to(ROOT).as_posix(): found
+        for path in surfaces
+        if (found := _turnover_called_one_way(path.read_text(encoding="utf-8")))
+    }
+    assert not offenders, f"turnover is two-sided; these call it one-way: {offenders}"
+
+
+def test_the_turnover_budget_slider_says_what_its_number_trades():
+    page = ast.parse((ROOT / "app" / "streamlit_app.py").read_text(encoding="utf-8"))
+    sliders = [
+        node.value
+        for node in ast.walk(page)
+        if isinstance(node, ast.Assign)
+        and [getattr(t, "id", None) for t in node.targets] == ["turnover_limit"]
+        and isinstance(node.value, ast.Call)
+        and getattr(node.value.func, "attr", None) == "slider"
+    ]
+    assert len(sliders) == 1, "found no single turnover_limit = st.slider(...)"
+    (slider,) = sliders
+    label = ast.literal_eval(slider.args[0])
+    help_text = next(ast.literal_eval(kw.value) for kw in slider.keywords if kw.arg == "help")
+    assert "two-sided" in label.lower()
+    # turnover_limit caps Σ|Δw|: at 0.20, 10% of the book is sold and 10% bought.
+    assert "0.20" in help_text
+    assert "10%" in help_text
 
 
 # ---------------------------------------------------------------------------
