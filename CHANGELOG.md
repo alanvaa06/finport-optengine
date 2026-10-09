@@ -506,6 +506,12 @@ with what to do about it.
   repository name**, with a step to update it on both indexes before the next
   tag: PyPI compares the name in the OIDC claim literally, so a publisher still
   named `Optimization_Engine` rejects the upload.
+- **The app labels turnover two-sided** (#42). The budget slider, the
+  backtest and performance tabs, the what-if caption and the diagnostics row
+  called `Σ|Δw|` one-way, and the slider said 0.20 lets 20% of the book
+  change hands; it lets 10%. The walk-forward figure now says two-sided too,
+  and "Moved by constraints", which is one-way, says it is half of `Σ|Δw|`.
+  The MCP server had no such wording. No number changes.
 
 ## [0.7.0] — 2026-09-03
 
