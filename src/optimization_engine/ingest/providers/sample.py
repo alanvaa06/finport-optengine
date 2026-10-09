@@ -43,7 +43,7 @@ class Sample(PriceProvider):
     name = "sample"
     description = (
         "Deterministic synthetic panel with a realistic cross-asset "
-        "correlation structure. No network, no key — the default for demos "
+        "correlation structure. No network, no key - the default for demos "
         "and tests."
     )
 

@@ -68,7 +68,7 @@ class InverseVolatilityOptimizer(_ProjectedOptimizer):
             raise ValueError(
                 f"Inverse-volatility weights are undefined for "
                 f"{len(degenerate)} zero-variance asset(s): "
-                f"{', '.join(map(str, degenerate))}. 1/σ does not exist there, "
+                f"{', '.join(map(str, degenerate))}. 1/sigma does not exist there, "
                 "and weighting them zero would drop them from the book without "
                 "saying so. Drop the asset(s) from the universe, or check the "
                 "price history for a constant series."

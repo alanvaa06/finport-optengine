@@ -67,7 +67,7 @@ class LocalFile(PriceProvider):
     name = "file"
     description = (
         "A panel you already have: CSV, Excel or Parquet, in wide "
-        "(date × asset) or long (date, identifier, OHLCV) layout."
+        "(date x asset) or long (date, identifier, OHLCV) layout."
     )
 
     def __init__(
@@ -312,7 +312,7 @@ def _from_long(
             raise ProviderResponseError(
                 f"{source.name} has an adjusted close but no raw `close` "
                 "column, so its open/high/low cannot be put on the same scale "
-                "— a dividend-adjusted close does not sit inside an "
+                "- a dividend-adjusted close does not sit inside an "
                 "unadjusted day's range. Add the raw `close` column, or drop "
                 "the open/high/low columns and load closes alone."
             )
@@ -361,7 +361,7 @@ def _select_identifiers(
             f"{source.name} has none of the requested identifiers "
             f"({', '.join(identifiers)}). It contains: "
             f"{', '.join(sorted(by_upper)[:12])}"
-            f"{'…' if len(by_upper) > 12 else ''}."
+            f"{'...' if len(by_upper) > 12 else ''}."
         )
     wanted = [original for original, _ in pairs]
     renamed = dict(pairs)

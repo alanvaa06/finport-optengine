@@ -206,7 +206,7 @@ class CVaROptimizer(BaseOptimizer):
                 "tail_observations": int(len(tail)),
                 "cvar_note": (
                     f"{1 - self.alpha:.0%} CVaR of {cvar_hist:.2%} per period "
-                    f"({cvar_hist * scale:.2%} scaled by √{self.periods_per_year}), "
+                    f"({cvar_hist * scale:.2%} scaled by sqrt({self.periods_per_year})), "
                     f"averaged over {len(tail)} tail scenario(s)."
                 ),
             }
@@ -221,8 +221,8 @@ class CVaROptimizer(BaseOptimizer):
         )
         warnings.warn(
             f"CVaR extras keys {renames}: the old names claimed an "
-            "annualization that was never performed — the value is the "
-            "per-period figure multiplied by √ppy, which only annualizes a "
+            "annualization that was never performed - the value is the "
+            "per-period figure multiplied by sqrt(ppy), which only annualizes a "
             "tail measure under iid Gaussian returns. Both key pairs are "
             "written for this release; the old names are removed after 0.6.x.",
             DeprecationWarning,

@@ -138,7 +138,7 @@ def _caveats(
         # Impact alone was charged. Calling that "free" contradicts the cost
         # line right above it; the honest statement is the narrower one.
         caveats.append(
-            "Only market impact was charged — no commission and no spread. "
+            "Only market impact was charged - no commission and no spread. "
             "The cost below is what size did to the price, not what the trade "
             "cost to place."
         )
@@ -146,7 +146,7 @@ def _caveats(
         caveats.append(
             "Market impact was priced against traded volume where the panel "
             "carried it. Any asset without volume was charged at the fixed "
-            "participation rate instead — those trades are named in the "
+            "participation rate instead - those trades are named in the "
             "degradation notes."
         )
     if int(run.meta.spec.get("execution_lag", 0)) == 0:

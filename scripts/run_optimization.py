@@ -65,21 +65,21 @@ def main() -> int:
 
     quality = analyze_prices(prices, periods_per_year=config.periods_per_year)
     for issue in quality.issues:
-        print(f"Data {issue.severity} — {issue.describe()}", file=sys.stderr)
+        print(f"Data {issue.severity} - {issue.describe()}", file=sys.stderr)
 
     # `method="common"` matches `optengine` — see `cli._prepare_inputs` for
     # why that method and not one of the other two. The panel is aligned
     # *after* the quality report so the report still sees the gaps.
     prices, alignment = align_panel(prices, method="common")
     for action in alignment:
-        print(f"Alignment — {action}", file=sys.stderr)
+        print(f"  Alignment: {action}", file=sys.stderr)
 
     returns = prices_to_returns(prices)
     n_rows = len(returns)
     returns = returns.dropna(how="any")
     if len(returns) < n_rows:
         print(
-            f"Alignment — dropped {n_rows - len(returns)} period(s) whose "
+            f"  Alignment: Dropped {n_rows - len(returns)} period(s) whose "
             "return could not be computed from the aligned prices.",
             file=sys.stderr,
         )
@@ -94,7 +94,7 @@ def main() -> int:
         n_frontier_points=args.frontier_points,
     )
     for warning in run.warnings:
-        print(f"Warning — {warning}", file=sys.stderr)
+        print(f"Warning - {warning}", file=sys.stderr)
 
     sheets = run_sheets(
         run,

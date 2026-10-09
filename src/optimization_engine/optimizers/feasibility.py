@@ -152,7 +152,7 @@ class FeasibilityReport:
         if not self.issues:
             return "Constraints are feasible."
         return "\n".join(
-            f"• {i.message}\n  → {i.suggestion}" for i in self.issues
+            f"* {i.message}\n  -> {i.suggestion}" for i in self.issues
         )
 
 
@@ -178,7 +178,7 @@ def _universe_issues(
                 message=(
                     f"{len(stray_bounds)} per-asset bound(s) name assets that are "
                     f"not in the universe: {', '.join(stray_bounds[:5])}"
-                    + (" …" if len(stray_bounds) > 5 else "")
+                    + (" ..." if len(stray_bounds) > 5 else "")
                 ),
                 suggestion=(
                     "Those bounds constrain nothing. Drop them, or check "
@@ -199,7 +199,7 @@ def _universe_issues(
                 message=(
                     f"Layer {layer.name!r} assigns {len(stray)} asset(s) that are "
                     f"not in the universe: {', '.join(stray[:5])}"
-                    + (" …" if len(stray) > 5 else "")
+                    + (" ..." if len(stray) > 5 else "")
                 ),
                 suggestion=(
                     f"They add nothing to {layer.name!r}'s buckets. Remove them "
@@ -264,7 +264,7 @@ def _budget_issues(
             FeasibilityIssue(
                 code="leverage_below_budget",
                 message=(
-                    f"Gross exposure is capped at {cap:.2f}× while "
+                    f"Gross exposure is capped at {cap:.2f}x while "
                     "the portfolio must be 100% invested."
                 ),
                 suggestion="Set the gross-exposure cap to at least 1.0.",
@@ -277,10 +277,10 @@ def _budget_issues(
                 code="leverage_below_box_minimum",
                 message=(
                     f"The per-asset bounds force a gross exposure of at least "
-                    f"{floor_gross:.2f}×, above the {cap:.2f}× cap."
+                    f"{floor_gross:.2f}x, above the {cap:.2f}x cap."
                 ),
                 suggestion=(
-                    f"Raise the gross-exposure cap to at least {floor_gross:.2f}×, "
+                    f"Raise the gross-exposure cap to at least {floor_gross:.2f}x, "
                     "or widen the per-asset bounds towards zero."
                 ),
             )
@@ -304,9 +304,9 @@ def _structural_issues(
                 message=(
                     f"{len(inverted)} asset(s) have a minimum weight above their "
                     f"maximum: {', '.join(inverted[:5])}"
-                    + (" …" if len(inverted) > 5 else "")
+                    + (" ..." if len(inverted) > 5 else "")
                 ),
-                suggestion="Fix the Min/Max columns so Min ≤ Max for every asset.",
+                suggestion="Fix the Min/Max columns so Min <= Max for every asset.",
             )
         )
 
@@ -355,7 +355,7 @@ def _layer_issues(
         if bucket is not None:
             members.setdefault(bucket, []).append(i)
 
-    where = f"{layer.name} · " if layer.name else ""
+    where = f"{layer.name} | " if layer.name else ""
     parent_layer = resolve_parent(layer, constraints.layers) if layer.parent else None
     parent_map: dict[str, str] = {}
     if layer.is_relative and parent_layer is None:
@@ -555,7 +555,7 @@ def _parent_coherence_issues(
         One issue per incoherent parent bucket, fatal in both directions.
     """
     issues: list[FeasibilityIssue] = []
-    where = f"{layer.name} · " if layer.name else ""
+    where = f"{layer.name} | " if layer.name else ""
     children_of: dict[str, list[str]] = {}
     for bucket, up in parent_map.items():
         if bucket in layer.limits:
@@ -574,7 +574,7 @@ def _parent_coherence_issues(
                     code="child_floors_exceed_parent_cap",
                     message=(
                         f"{where}{', '.join(sorted(children))} sit inside "
-                        f"{parent_layer.name} · {up!r}, which is capped at "
+                        f"{parent_layer.name} | {up!r}, which is capped at "
                         f"{parent_cap:.2%}, but their minimums already require "
                         f"{floor_total:.2%}."
                     ),
@@ -595,7 +595,7 @@ def _parent_coherence_issues(
                     code="child_caps_below_parent_floor",
                     message=(
                         f"{where}{', '.join(sorted(children))} cover "
-                        f"{parent_layer.name} · {up!r} entirely, but their caps "
+                        f"{parent_layer.name} | {up!r} entirely, but their caps "
                         f"add up to {cap_total:.2%} while {up!r} must hold at "
                         f"least {parent_floor:.2%}."
                     ),
@@ -673,7 +673,7 @@ def _relative_layer_issues(
                     message=(
                         f"Inside {up!r}, the {layer.name} caps sum to "
                         f"{cap_total:.0%} of the sleeve, so the sleeve can only "
-                        f"be held at zero — but {up!r} must hold at least "
+                        f"be held at zero - but {up!r} must hold at least "
                         f"{parent_floor:.2%} of the book."
                     ),
                     suggestion=(
@@ -705,7 +705,7 @@ def _relative_layer_issues(
                     code="relative_floors_exceed_parent",
                     message=(
                         f"Inside {up!r}, the {layer.name} minimums sum to "
-                        f"{floor_total:.0%} of the sleeve — more than the "
+                        f"{floor_total:.0%} of the sleeve - more than the "
                         "sleeve itself."
                     ),
                     suggestion=(
@@ -944,7 +944,7 @@ def _jointly_infeasible_issue(
             code="jointly_infeasible",
             message=(
                 "Every part of this mandate is satisfiable on its own, but no "
-                "allocation satisfies them all at once — and dropping any "
+                "allocation satisfies them all at once - and dropping any "
                 "single one of them does not make it solvable either."
             ),
             suggestion=(
@@ -960,7 +960,7 @@ def _jointly_infeasible_issue(
             "own, but no allocation satisfies them all at once."
         ),
         suggestion=(
-            f"Relax {culprit} — widen its caps or lower its floors — or widen "
+            f"Relax {culprit} - widen its caps or lower its floors - or widen "
             "the per-asset bounds it has to work with. Removing it is what "
             "makes the rest of the mandate solvable."
         ),
@@ -1248,7 +1248,7 @@ def analyze_feasibility(
                             " Note that Black-Litterman optimizes "
                             "against its equilibrium posterior, which "
                             "usually sits well below historical means "
-                            "— so a target that suits mean-variance "
+                            "- so a target that suits mean-variance "
                             "can be unreachable here."
                             if expected_returns is not None
                             and getattr(expected_returns, "name", "")

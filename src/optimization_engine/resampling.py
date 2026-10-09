@@ -504,7 +504,7 @@ def resampled_efficient_frontier(
         raise ValueError(
             f"{n_failed} of {n_draws} resampled draws failed and only "
             f"{len(stacks)} solved. An average over the minority that solved "
-            "is not a resampled portfolio — it is an average over the draws "
+            "is not a resampled portfolio - it is an average over the draws "
             "where the mandate happened not to bind. Loosen the mandate, or "
             f"resample a longer history. First failure: {first_error}"
         )

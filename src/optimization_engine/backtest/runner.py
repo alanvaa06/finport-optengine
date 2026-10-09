@@ -251,7 +251,7 @@ def resolve_universe_mask(
             "frame (%s); they are resolved by the %r policy.",
             len(unknown),
             len(assets),
-            ", ".join(unknown[:5]) + (" …" if len(unknown) > 5 else ""),
+            ", ".join(unknown[:5]) + (" ..." if len(unknown) > 5 else ""),
             universe_policy,
         )
     mask = point_in_time_mask(

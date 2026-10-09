@@ -199,7 +199,7 @@ def test_coverage_reports_provenance_and_volume_availability():
     assert coverage.loc["AAA", "kind"] == "index"
     assert not bool(coverage.loc["AAA", "has_volume"])
     # An identifier with no metadata still gets a row rather than vanishing.
-    assert coverage.loc["BBB", "provider"] == "—"
+    assert coverage.loc["BBB", "provider"] == "-"
 
 
 def test_tradeable_excludes_indices_and_rates():

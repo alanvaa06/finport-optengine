@@ -204,8 +204,8 @@ class DeflatedSharpe:
         return (
             f"Sharpe {self.sharpe:.2f} over {self.n_observations} observations. "
             f"Across {self.n_trials} trial(s) the best result expected under "
-            f"the null is {self.benchmark_sharpe:.2f}; the deflated Sharpe — "
-            f"P(true Sharpe > that) — is {self.deflated:.1%}, against "
+            f"the null is {self.benchmark_sharpe:.2f}; the deflated Sharpe - "
+            f"P(true Sharpe > that) - is {self.deflated:.1%}, against "
             f"{self.probabilistic:.1%} before the trial count is taken into "
             f"account. The strategy {verdict} at 95%. "
             f"(Skew {self.skewness:.2f}, kurtosis {self.kurtosis:.2f}.)"
@@ -333,8 +333,8 @@ def _usable_trial_sharpes(
     if dropped:
         warnings.warn(
             f"{dropped} of the {len(supplied)} trial Sharpes are not finite, or too "
-            "large for a stream with any dispersion — a constant return stream has "
-            "no Sharpe ratio — and were left out of the dispersion. They still "
+            "large for a stream with any dispersion - a constant return stream has "
+            "no Sharpe ratio - and were left out of the dispersion. They still "
             "count as trials.",
             UserWarning,
             stacklevel=3,
@@ -464,9 +464,9 @@ class OverfittingReport:
         return (
             f"Across {self.n_splits} balanced splits of {self.n_trials} "
             f"candidate strategies, the in-sample winner landed below the "
-            f"out-of-sample median {self.pbo:.1%} of the time — "
+            f"out-of-sample median {self.pbo:.1%} of the time - "
             f"{verdict}. Out-of-sample performance regressed on in-sample has "
-            f"slope {self.performance_degradation:.2f} (≤ 0 means in-sample "
+            f"slope {self.performance_degradation:.2f} (<= 0 means in-sample "
             f"ranking is uninformative), and the winner lost money out of "
             f"sample in {self.probability_of_loss:.1%} of splits."
         )

@@ -202,7 +202,7 @@ def validate_benchmark_constraints(
         raise ConfigurationError(
             "A tracking-error or active-share budget was set without a "
             "benchmark. Both are measured against benchmark *positions*, so "
-            "name a benchmark defined by weights — 1/N, a single asset, or a "
+            "name a benchmark defined by weights - 1/N, a single asset, or a "
             "custom vector. An external index has no holdings in the "
             "investable universe and cannot bound active risk."
         )

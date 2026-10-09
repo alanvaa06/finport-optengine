@@ -275,7 +275,7 @@ class RunResult:
             else f"; {len(self.meta.degradations)} cost degradation(s)"
         )
         return (
-            f"{self.meta.spec.get('name', 'backtest')} — {len(self.returns)} periods "
+            f"{self.meta.spec.get('name', 'backtest')} - {len(self.returns)} periods "
             f"({sample}), turnover {self.annualized_turnover:.2f}x/yr, "
             f"cost {self.total_cost * 100:.2f}% of NAV{degraded}"
         )

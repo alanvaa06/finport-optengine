@@ -57,7 +57,7 @@ class Fred(PriceProvider):
     name = "fred"
     description = (
         "Keyless daily index levels (S&P 500, Nasdaq, VIX) from the St. Louis "
-        "Fed. Levels only — no OHLC, no volume."
+        "Fed. Levels only - no OHLC, no volume."
     )
 
     @property
@@ -126,7 +126,7 @@ class Fred(PriceProvider):
         if rejected:
             raise ProviderConfigurationError(
                 f"FRED series {', '.join(rejected)} are interest rates in percent, "
-                "not investable price levels — optimizing on them produces "
+                "not investable price levels - optimizing on them produces "
                 "meaningless returns. Use them as a risk-free rate instead "
                 "(`optengine fred`, or `load_risk_free_rate`)."
             )

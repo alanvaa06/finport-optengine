@@ -725,7 +725,7 @@ def layer_breaches(
     for _, row in exposures.iterrows():
         lo, hi = row["effective_min"], row["effective_max"]
         actual = float(row["weight"])
-        label = f"{row['layer']} · {row['bucket']}"
+        label = f"{row['layer']} | {row['bucket']}"
         if pd.notna(lo) and actual < float(lo) - tolerance:
             out.append((f"{label} lower bound", "min", float(lo), actual))
         if pd.notna(hi) and actual > float(hi) + tolerance:

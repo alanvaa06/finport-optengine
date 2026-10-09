@@ -561,7 +561,7 @@ def benchmark_constraints(
             raise ValueError(
                 "A tracking-error budget needs a covariance matrix. This "
                 "optimizer does not have one, so the limit could not be "
-                "imposed — use mean_variance, min_variance or "
+                "imposed - use mean_variance, min_variance or "
                 "active_mean_variance to bind it."
             )
         cons.append(cp.quad_form(active, cp.psd_wrap(cov_matrix)) <= te**2)

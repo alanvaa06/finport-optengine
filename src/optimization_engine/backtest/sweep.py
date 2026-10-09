@@ -88,7 +88,7 @@ class SweepSpec:
         if self.max_cells > HARD_CELL_CAP:
             raise SweepValidationError(
                 f"max_cells {self.max_cells} exceeds the hard cap of {HARD_CELL_CAP}. "
-                "Shrink the grid — the cap is not raisable."
+                "Shrink the grid - the cap is not raisable."
             )
 
     def cell_count(self) -> int:

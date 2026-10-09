@@ -283,7 +283,7 @@ def test_denoise_ewma_uses_effective_observations(returns: pd.DataFrame):
     assert ewma_report.eigenvalue_cutoff > plain_report.eigenvalue_cutoff
     assert ewma_report.n_signal_eigenvalues <= plain_report.n_signal_eigenvalues
     assert "effective observations" in ewma_report.describe()
-    assert "λ = 0.94" in ewma_report.describe()
+    assert "lambda = 0.94" in ewma_report.describe()
 
 
 def test_denoise_ewma_refuses_a_universe_wider_than_its_effective_sample():
@@ -309,7 +309,7 @@ def test_denoise_ewma_refuses_a_universe_wider_than_its_effective_sample():
     # their loader dropped 983 rows.
     assert "effective observations" in message
     assert "from 1000 rows" in message
-    assert "λ = 0.94" in message
+    assert "lambda = 0.94" in message
     assert "T/N = 0.68" in message
     # The same panel denoises fine without the exponential weighting.
     assert covariance_matrix(frame, method="sample", denoise=True) is not None

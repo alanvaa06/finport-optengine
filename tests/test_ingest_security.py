@@ -142,7 +142,7 @@ def test_the_service_does_not_relay_an_adapter_exception_message():
 
 
 def test_a_short_secret_is_masked_completely():
-    assert credentials.mask("abcdefghi") == "•" * 9
+    assert credentials.mask("abcdefghi") == "*" * 9
     assert "abcdefghi" not in credentials.mask("abcdefghi")
     # A real 32-character key can afford a recognizable hint.
     hinted = credentials.mask(SECRET)

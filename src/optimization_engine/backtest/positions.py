@@ -200,7 +200,7 @@ def compute_position_stats(run: RunResult, returns: pd.DataFrame) -> PositionSta
 
     if not closed:
         message = (
-            "no closed positions — every position held at the end is still open"
+            "no closed positions - every position held at the end is still open"
             if episodes
             else "the book was never invested"
         )
@@ -238,7 +238,7 @@ def compute_position_stats(run: RunResult, returns: pd.DataFrame) -> PositionSta
 
     if gross_loss == 0.0:
         profit_factor: float | None = None
-        reasons["profit_factor"] = "no losing positions — profit factor is undefined"
+        reasons["profit_factor"] = "no losing positions - profit factor is undefined"
     else:
         profit_factor = gross_win / abs(gross_loss)
 

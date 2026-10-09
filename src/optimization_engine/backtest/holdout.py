@@ -118,7 +118,7 @@ def assert_within_holdout(
     if last > boundary:
         raise HoldoutViolationError(
             f"{name} carries {last.date()}, past the holdout boundary "
-            f"{boundary.date()} — a gated run must never see this row."
+            f"{boundary.date()} - a gated run must never see this row."
         )
 
 
@@ -190,7 +190,7 @@ class HoldoutOutcome:
         if self.is_first_look:
             return (
                 "First look at the held-out segment. Whatever it says, it says "
-                "once — a second look is a second trial."
+                "once - a second look is a second trial."
             )
         notes = []
         if REPEATED in self.flags:
@@ -200,7 +200,7 @@ class HoldoutOutcome:
         if SHIFTED_HOLDOUT in self.flags:
             notes.append(
                 "this strategy has been evaluated against a different holdout "
-                "boundary — the boundary moved"
+                "boundary - the boundary moved"
             )
         return "Holdout flags: " + "; ".join(notes) + "."
 

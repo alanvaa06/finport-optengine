@@ -322,6 +322,16 @@ with what to do about it.
 
 ### Changed
 
+- **Everything the package prints is ASCII.** The `backslashreplace` guard kept
+  a piped Windows run alive but printed `—` where a dash belonged. Every
+  message, warning, exception, diagnosis, method description and `--help` text
+  now uses `-`, `->`, `...`, `x`, `<=`, `+/-` and spelled-out Greek (`alpha`,
+  `delta`, `lambda`, `sqrt(252)`). Strings that changed shape: a masked key
+  shows `*` for `•` and `-` for no key; a layer label is `Layer | bucket`, not
+  `Layer · bucket`; a missing value in a coverage or audit table is `-`.
+  `scripts/run_optimization.py` prints `  Alignment: ...` like `optengine`.
+  Code matching the old characters needs the new ones. The Streamlit app and
+  Plotly labels are unchanged.
 - **`data_source` in the check, optimize and backtest payloads; schema 2.3.**
   `kind`, `synthetic`, `path`, `provider`, `identifiers`. Branch on
   `synthetic`, which is true for `--sample` and for the `sample` provider. The

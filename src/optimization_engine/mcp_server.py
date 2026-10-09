@@ -87,9 +87,9 @@ that is wide by capital and narrow by risk looks diversified in a weights
 table and is not.
 
 Data: pass `sample=True` for a built-in synthetic panel, or `prices_path`
-for a CSV, Excel or Parquet file of prices (not returns — the engine
+for a CSV, Excel or Parquet file of prices (not returns - the engine
 differences them). Paths must lie under the directories this server was
-started with — its working directory unless it was told otherwise.
+started with - its working directory unless it was told otherwise.
 """
 
 
@@ -350,7 +350,7 @@ def _panel(
 
     if sample and prices_path:
         raise ToolError(
-            "Pass either sample=True or prices_path, not both — otherwise it "
+            "Pass either sample=True or prices_path, not both - otherwise it "
             "is ambiguous which panel the result describes."
         )
     if sample:

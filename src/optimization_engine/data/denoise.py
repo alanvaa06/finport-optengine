@@ -349,13 +349,13 @@ class DenoiseReport:
         line = (
             f"Marchenko-Pastur fit on {sample} of "
             f"{self.n_assets} assets (T/N = {self.q:.1f}) put the noise edge at "
-            f"λ₊ = {self.eigenvalue_cutoff:.3f}. "
+            f"lambda+ = {self.eigenvalue_cutoff:.3f}. "
             f"{self.n_signal_eigenvalues} of {self.n_assets} eigenvalues sit "
             "above it"
         )
         if self.n_factors_kept != self.n_signal_eigenvalues:
             line += (
-                f", but {self.n_factors_kept} were kept anyway — the filter "
+                f", but {self.n_factors_kept} were kept anyway - the filter "
                 "never treats the whole matrix as noise, nor none of it"
             )
         line += (
@@ -364,9 +364,9 @@ class DenoiseReport:
             f"eigenvalues were treated as noise "
             f"({self.method.replace('_', ' ')}). "
             f"The correlation's condition number went "
-            f"{self.correlation_condition_before:.3g} → "
+            f"{self.correlation_condition_before:.3g} -> "
             f"{self.correlation_condition_after:.3g}; the covariance's went "
-            f"{self.condition_before:.3g} → {self.condition_after:.3g}"
+            f"{self.condition_before:.3g} -> {self.condition_after:.3g}"
         )
         if (
             np.isfinite(self.condition_after)
@@ -376,7 +376,7 @@ class DenoiseReport:
             and self.condition_after > 0.9 * self.condition_before
         ):
             line += (
-                " — so this covariance's conditioning is driven by the spread "
+                " - so this covariance's conditioning is driven by the spread "
                 "of the volatilities, not by correlation noise, and no "
                 "eigenvalue filter will improve it."
             )
@@ -385,7 +385,7 @@ class DenoiseReport:
         if self.noise_fit_failed:
             line += (
                 " The Marchenko-Pastur fit did not converge, so the noise "
-                "variance is the 1.0 fallback rather than an estimate — the "
+                "variance is the 1.0 fallback rather than an estimate - the "
                 "widest edge there is, which can class weak factors as noise."
             )
         if self.effective_sample_note:
@@ -394,7 +394,7 @@ class DenoiseReport:
             line += (
                 f" The top {self.detoned_factors} eigenvector(s) were then "
                 "removed, so the result is a market-neutral correlation and is "
-                "singular by construction — use it for clustering and distance, "
+                "singular by construction - use it for clustering and distance, "
                 "not for anything that inverts it."
             )
         return line
@@ -625,9 +625,9 @@ def denoise_covariance(
                 f"effective observations (from {nominal} rows) against "
                 f"N = {n} assets gives T/N = {q:.2f}. "
                 f"{effective_sample_note} "
-                "The Marchenko-Pastur cutoff is not defined below T/N = 1 — "
+                "The Marchenko-Pastur cutoff is not defined below T/N = 1 - "
                 "the sample correlation is singular there and the fit has no "
-                "noise edge to find — so this combination cannot be denoised "
+                "noise edge to find - so this combination cannot be denoised "
                 "however long the panel is. Either shorten the universe to "
                 f"fewer than {n_observations} assets, raise the decay so the "
                 "estimator leans on more history, or denoise an "
@@ -664,7 +664,7 @@ def denoise_covariance(
             }
         )
         warnings.warn(
-            "A detoned covariance is singular by construction — the market "
+            "A detoned covariance is singular by construction - the market "
             "eigenvector has been removed. Use it for clustering methods "
             "(HRP, HERC, NCO) and not for solves that invert the matrix.",
             stacklevel=2,

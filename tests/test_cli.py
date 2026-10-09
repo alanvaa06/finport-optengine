@@ -1023,6 +1023,7 @@ def test_optimize_writes_its_report_through_a_legacy_encoding(tmp_path):
     assert b"Traceback" not in proc.stderr, proc.stderr.decode("cp1252", "replace")
     assert proc.returncode == 0
     assert out.exists()
-    # The character is escaped rather than lost, so the line still says what
-    # it said.
-    assert b"\u2190binding" in proc.stdout
+    # The marker is ASCII now, so there is nothing left to escape.
+    assert b"<-binding" in proc.stdout
+    assert b"\\u" not in proc.stdout
+    assert proc.stdout.isascii()

@@ -335,7 +335,7 @@ class PerformanceReport:
             parts.append(
                 f"Against {self.benchmark_label or 'the benchmark'} it was "
                 f"{abs(h['excess_return']):.2%} a year {verb}, at "
-                f"{h['tracking_error']:.2%} tracking error — an information "
+                f"{h['tracking_error']:.2%} tracking error - an information "
                 f"ratio of {h['information_ratio']:.2f}, with a beta of "
                 f"{h['beta']:.2f}."
             )

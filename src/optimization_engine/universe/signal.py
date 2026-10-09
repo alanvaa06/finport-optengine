@@ -118,7 +118,7 @@ def to_boolean_frame(frame: pd.DataFrame) -> pd.DataFrame:
             {str(d) for d in out.index[out.index.duplicated()]}
         )
         raise UniverseError(
-            "A signal cannot carry the same date twice — an as-of lookup on "
+            "A signal cannot carry the same date twice - an as-of lookup on "
             f"one would have no single answer. Repeated: {duplicated}."
         )
     if not out.index.is_monotonic_increasing:

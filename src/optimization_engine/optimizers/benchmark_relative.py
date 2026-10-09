@@ -73,7 +73,7 @@ class ActiveMeanVarianceOptimizer(BaseOptimizer):
         if b is None:
             raise ValueError(
                 "active_mean_variance optimizes against a benchmark, but none "
-                "was set. Choose a benchmark before running it — with no "
+                "was set. Choose a benchmark before running it - with no "
                 "index to be active against, use mean_variance instead."
             )
         return b
@@ -114,7 +114,7 @@ class ActiveMeanVarianceOptimizer(BaseOptimizer):
             raise RuntimeError(
                 f"Solver failed for {self.name}: status={problem.status}. The "
                 "tracking-error budget and the weight bounds may be mutually "
-                "impossible — a benchmark holding an asset the bounds cap "
+                "impossible - a benchmark holding an asset the bounds cap "
                 "below its index weight forces a minimum tracking error."
             )
 

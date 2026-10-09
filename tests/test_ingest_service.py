@@ -189,8 +189,8 @@ def test_placeholder_values_count_as_no_key(monkeypatch):
 
 
 def test_mask_never_reveals_a_short_secret():
-    assert credentials.mask("short") == "•••••"
-    assert credentials.mask(None) == "—"
+    assert credentials.mask("short") == "*****"
+    assert credentials.mask(None) == "-"
     masked = credentials.mask("sk-live-abcdefghijklmnop")
     assert "abcdefghijkl" not in masked
     assert masked.endswith("mnop")

@@ -109,7 +109,7 @@ class InformationCoefficient:
             f"Mean information coefficient {self.mean:.3f} over "
             f"{self.n_periods} periods (median cross-section "
             f"{self.n_assets:.0f} assets), standard deviation {self.std:.3f}, "
-            f"t-statistic {self.t_statistic:.2f} — {verdict}. The forecast had "
+            f"t-statistic {self.t_statistic:.2f} - {verdict}. The forecast had "
             f"the right sign in {self.hit_rate:.0%} of periods."
         )
 
@@ -335,8 +335,8 @@ class FundamentalLawReport:
             f"{self.breadth:.0f} independent bets a year implies an "
             f"information ratio of {self.unconstrained_information_ratio:.2f} "
             f"unconstrained. A transfer coefficient of "
-            f"{self.transfer_coefficient:.2f} — the share of the forecast the "
-            f"mandate lets through — cuts that to "
+            f"{self.transfer_coefficient:.2f} - the share of the forecast the "
+            f"mandate lets through - cuts that to "
             f"{self.information_ratio:.2f}, giving up "
             f"{self.constraint_cost:.2f} of IR to the constraints."
         )

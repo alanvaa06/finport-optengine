@@ -76,7 +76,7 @@ class RiskParityOptimizer(BaseOptimizer):
             zero = [a for a, v in zip(self.assets, b) if v <= 0]
             raise ValueError(
                 f"Risk budget is zero for {zero}. The log-barrier formulation "
-                "needs a strictly positive budget for every asset — give them a "
+                "needs a strictly positive budget for every asset - give them a "
                 "small positive share, or drop them from the universe."
             )
         total = b.sum()
@@ -174,7 +174,7 @@ class RiskParityOptimizer(BaseOptimizer):
         if error.max() > 1e-3:
             self._diagnostics["risk_budget_note"] = (
                 f"Largest gap between target and achieved risk share is "
-                f"{error.max():.2%} — the weight bounds or group budgets stop "
+                f"{error.max():.2%} - the weight bounds or group budgets stop "
                 "the portfolio from reaching exact risk parity."
             )
 
