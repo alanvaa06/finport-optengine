@@ -22,6 +22,7 @@ done.)
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -236,7 +237,12 @@ def test_the_script_aligns_the_way_the_cli_does(tmp_path):
             "--output", str(tmp_path / "report.xlsx"),
         ],
         capture_output=True,
-        text=True,
+        # Both ends pinned to one encoding. Left to the defaults, the child
+        # writes in whatever PYTHONIOENCODING says and this side decodes in the
+        # locale's; on Windows those disagree (utf-8 vs cp1252) and the dash
+        # in the message arrives as mojibake.
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        encoding="utf-8",
         cwd=str(ROOT),
     )
     assert proc.returncode == 0, proc.stderr
