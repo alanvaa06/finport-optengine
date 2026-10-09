@@ -46,11 +46,46 @@ def monthly() -> pd.DataFrame:
 
 @pytest.mark.parametrize(
     ("freq", "expected"),
-    [("B", 252), ("D", 252), ("W-FRI", 52), ("ME", 12), ("MS", 12), ("QE", 4), ("YE", 1)],
+    [
+        ("B", 252), ("D", 252), ("W-FRI", 52), ("2W-FRI", 26), ("ME", 12), ("MS", 12),
+        ("QE", 4), ("6ME", 2), ("6MS", 2), ("YE", 1),
+    ],
 )
 def test_the_spacing_of_the_dates_names_the_frequency(freq, expected):
     index = pd.date_range("2015-01-01", periods=40, freq=freq)
     assert infer_periods_per_year(index) == expected
+
+
+def test_a_biweekly_series_is_not_annualized_as_daily():
+    """The repro: a fortnightly NAV fell between the bands and got 252."""
+    biweekly = pd.date_range("2020-01-03", periods=60, freq="2W-FRI")
+    ppy, note = resolve_periods_per_year(biweekly)
+    assert ppy == 26
+    assert "biweekly" in note
+
+
+def test_a_semiannual_series_annualizes_on_two():
+    semiannual = pd.date_range("2000-06-30", periods=30, freq="6ME")
+    ppy, note = resolve_periods_per_year(semiannual)
+    assert ppy == 2
+    assert "semiannual" in note
+    with pytest.raises(FrequencyMismatchError, match="periods_per_year: 2"):
+        resolve_periods_per_year(semiannual, stated=4)
+
+
+def test_semimonthly_dates_may_state_twenty_four():
+    """1st-and-15th dates sit in the biweekly band; 24 is what they are."""
+    semimonthly = pd.date_range("2020-01-01", periods=48, freq="SMS")
+    assert resolve_periods_per_year(semimonthly, stated=24) == (24, "")
+    with pytest.raises(FrequencyMismatchError, match="periods_per_year: 26"):
+        resolve_periods_per_year(semimonthly, stated=252)
+
+
+def test_seven_day_daily_data_is_daily_and_may_state_365():
+    """Crypto trades every day: still daily, and 365 is a statement about it."""
+    calendar_days = pd.date_range("2020-01-01", periods=400, freq="D")
+    assert infer_periods_per_year(calendar_days) == 252
+    assert resolve_periods_per_year(calendar_days, stated=365) == (365, "")
 
 
 def test_too_few_or_irregular_dates_infer_nothing():

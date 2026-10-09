@@ -50,8 +50,12 @@ class _Band(NamedTuple):
 _BANDS: tuple[_Band, ...] = (
     _Band("daily", 0.5, 4.0, 252, (240, 366)),
     _Band("weekly", 5.0, 9.0, 52, (48, 53)),
+    # Fortnightly NAVs. Semi-monthly dates (the 1st and the 15th) have the
+    # same median spacing and 24 periods a year, so 24 is accepted when stated.
+    _Band("biweekly", 13.0, 16.0, 26, (24, 26)),
     _Band("monthly", 26.0, 35.0, 12, (12, 12)),
     _Band("quarterly", 85.0, 96.0, 4, (4, 4)),
+    _Band("semiannual", 175.0, 190.0, 2, (2, 2)),
     _Band("annual", 350.0, 380.0, 1, (1, 1)),
 )
 
@@ -86,9 +90,10 @@ def infer_periods_per_year(index: pd.Index) -> int | None:
         index: The dates of a price or return panel.
 
     Returns:
-        252, 52, 12, 4 or 1 for daily, weekly, monthly, quarterly or annual
-        spacing; ``None`` when the index is not dates, has fewer than three of
-        them, or is spaced like none of those.
+        252, 52, 26, 12, 4, 2 or 1 for daily, weekly, biweekly, monthly,
+        quarterly, semiannual or annual spacing; ``None`` when the index is
+        not dates, has fewer than three of them, or is spaced like none of
+        those.
     """
     band, _ = _band_for(index)
     return band.periods_per_year if band is not None else None
