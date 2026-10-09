@@ -114,7 +114,10 @@ def var_historic(r: pd.Series | pd.DataFrame, level: float = 5) -> float | pd.Se
 
     Returns:
         A positive number: a VaR of ``0.02`` means "lose 2% or more in the
-        worst 5% of periods". One value per column for a frame.
+        worst 5% of periods". One value per column for a frame. NaN where
+        there is no observation: ``np.percentile`` raises on an empty array,
+        and one never-observed column used to take down a whole
+        ``summary_stats`` table.
 
     Raises:
         TypeError: If ``r`` is neither a Series nor a DataFrame.
@@ -122,7 +125,10 @@ def var_historic(r: pd.Series | pd.DataFrame, level: float = 5) -> float | pd.Se
     if isinstance(r, pd.DataFrame):
         return r.aggregate(var_historic, level=level)
     if isinstance(r, pd.Series):
-        return -np.percentile(r.dropna(), level)
+        observed = r.dropna()
+        if observed.empty:
+            return float("nan")
+        return -np.percentile(observed, level)
     raise TypeError("Expected Series or DataFrame")
 
 
@@ -170,7 +176,9 @@ def cvar_historic(r: pd.Series | pd.DataFrame, level: float = 5) -> float | pd.S
 
     Returns:
         A positive number: the average loss across the periods worse than the
-        VaR threshold. One value per column for a frame.
+        VaR threshold. One value per column for a frame. NaN where there is
+        no observation, as for :func:`var_historic`: no period lies beyond a
+        NaN threshold, and the mean of none is NaN.
 
     Raises:
         TypeError: If ``r`` is neither a Series nor a DataFrame.
