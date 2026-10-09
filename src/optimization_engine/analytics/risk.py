@@ -204,12 +204,17 @@ def tail_ratio(r: pd.Series | pd.DataFrame, level: float = 5) -> float | pd.Seri
             the 95th percentile against the 5th.
 
     Returns:
-        A dimensionless ratio. One value per column for a frame.
+        A dimensionless ratio. One value per column for a frame. It reads
+        the periods that were observed — a NaN period is in neither tail, as
+        for :func:`var_historic` — and is NaN where there is none.
     """
     if isinstance(r, pd.DataFrame):
         return r.aggregate(tail_ratio, level=level)
-    right = float(np.percentile(r, 100 - level))
-    left = float(abs(np.percentile(r, level)))
+    observed = r.dropna()
+    if observed.empty:
+        return float("nan")
+    right = float(np.percentile(observed, 100 - level))
+    left = float(abs(np.percentile(observed, level)))
     return right / left if left > 0 else float("nan")
 
 
@@ -228,10 +233,14 @@ def omega_ratio(
 
     Returns:
         A dimensionless ratio, above 1 when the probability-weighted gains
-        exceed the losses. One value per column for a frame.
+        exceed the losses. One value per column for a frame. NaN where there
+        is no observation: both sums are then zero, which used to read as
+        gains with no losses — an infinite ratio.
     """
     if isinstance(r, pd.DataFrame):
         return r.aggregate(omega_ratio, threshold=threshold)
+    if r.count() == 0:
+        return float("nan")
     excess = r - threshold
     gains = float(excess[excess > 0].sum())
     losses = float(-excess[excess < 0].sum())
@@ -376,7 +385,12 @@ def max_drawdown_duration(returns: pd.Series) -> float:
 
     Returns:
         The length in periods, on whatever periodicity ``returns`` carries.
+        0 for a stream that never fell below a peak; NaN for one with no
+        observation, which has no drawdown episode either and used to score
+        0 as well.
     """
+    if returns.count() == 0:
+        return float("nan")
     table = drawdown_table(returns, top=10_000)
     if table.empty:
         return 0.0

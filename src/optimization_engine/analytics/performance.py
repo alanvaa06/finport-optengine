@@ -393,11 +393,14 @@ def hit_rate(r: pd.Series | pd.DataFrame, threshold: float = 0.0) -> float | pd.
     Returns:
         A fraction in ``[0, 1]``. Read next to :func:`win_loss_ratio`, never
         instead of it. One value per column for a frame, a scalar for a
-        series.
+        series. NaN where there is no observation.
     """
     # A NaN period is neither a win nor a loss, so it leaves the denominator
     # as well as the numerator; ``(r > t).mean()`` would count it as a loss.
-    return (r > threshold).sum() / r.count()
+    # With no observation the ratio is 0/0, NaN: pandas divides the frame path
+    # quietly, and this keeps the scalar path from warning about it.
+    with np.errstate(invalid="ignore"):
+        return (r > threshold).sum() / r.count()
 
 
 def gain_to_pain_ratio(r: pd.Series | pd.DataFrame) -> float | pd.Series:
@@ -593,6 +596,11 @@ def summary_stats(
     ``"Sharpe Ratio (geometric)"`` carries the number ``"Sharpe Ratio"`` held
     before the conventions were unified, so a reader can see exactly what
     moved. It is a one-release migration aid and will be removed.
+
+    A column with no observation — a walk-forward that never solved, a
+    benchmark with no overlap — is NaN in every metric, and the other columns
+    come out as they would on their own. It used to raise ``IndexError`` from
+    the historic VaR and take the whole table with it.
 
     Args:
         r: Periodic returns, one column per series.
