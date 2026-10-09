@@ -297,6 +297,24 @@ def test_a_monthly_file_is_annualized_on_twelve_and_a_contradiction_refused(tmp_
     assert "periods_per_year: 12" in message
 
 
+def test_an_unrecognised_spacing_is_refused_unless_the_config_states_one(tmp_path):
+    """Dates 20 days apart match no frequency: the tools ask, not assume 252."""
+    from optimization_engine.data.loader import sample_dataset
+
+    daily = sample_dataset(n_periods=252 * 10, seed=1)[["US_Equity", "Gold"]]
+    csv = tmp_path / "every20.csv"
+    daily.resample("20D").last().to_csv(csv, index_label="date")
+
+    args = {"prices_path": str(csv), "optimizer": "min_variance"}
+    for tool in ("optimize", "check_mandate", "backtest"):
+        assert "set periods_per_year" in failure(tool, args).lower(), tool
+
+    stated = tmp_path / "stated.yaml"
+    stated.write_text("periods_per_year: 18\noptimizer: min_variance\n")
+    solved = call("optimize", {"prices_path": str(csv), "config_path": str(stated)})
+    assert solved["weights"]
+
+
 # ---------------------------------------------------------------------------
 # What the path-taking tools may read, and what their errors may say
 # ---------------------------------------------------------------------------

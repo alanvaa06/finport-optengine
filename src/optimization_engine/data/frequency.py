@@ -10,10 +10,13 @@ tell.
 The dates already say which it is. :func:`resolve_periods_per_year` decides
 the factor in one place, in this order: a value the config states, checked
 against the dates; then the ingest interval the panel was fetched at, checked
-the same way; then the spacing of the dates themselves; and only when none of
-those can say, the config's default. A stated value or an interval that the
-dates contradict is refused rather than overridden, because either way one of
-the two inputs is not what its author thinks it is.
+the same way; then the spacing of the dates themselves; and only when there
+are no dates to measure, the config's default. A stated value or an interval
+that the dates contradict is refused rather than overridden, because either
+way one of the two inputs is not what its author thinks it is. Dates spaced
+like no frequency the module knows, with nothing stated, are refused too: the
+default there would be a guess, and 252 on fortnightly data is the same error
+as 252 on monthly data.
 """
 
 from __future__ import annotations
@@ -27,7 +30,12 @@ from optimization_engine.ingest.spec import INTERVALS
 
 
 class FrequencyMismatchError(ValueError):
-    """A stated ``periods_per_year`` or interval contradicts the data's dates."""
+    """The data's dates contradict a stated frequency, or name none at all.
+
+    Raised when a stated ``periods_per_year`` or ingest interval disagrees
+    with the spacing of the dates, and when that spacing matches no known
+    frequency and nothing states one.
+    """
 
 
 class _Band(NamedTuple):
@@ -116,7 +124,8 @@ def resolve_periods_per_year(
         interval: The ingest interval the panel was fetched at (a key of
             :data:`~optimization_engine.ingest.spec.INTERVALS`), or ``None``
             when it did not come through an ingest.
-        default: The value to fall back on when nothing else can say.
+        default: The value to fall back on when there are no dates to
+            measure: ``index`` is not dates, or holds fewer than three.
 
     Returns:
         ``(periods_per_year, note)``. The note is one sentence naming where a
@@ -125,7 +134,10 @@ def resolve_periods_per_year(
 
     Raises:
         FrequencyMismatchError: When ``stated`` or ``interval`` implies a
-            frequency the dates' spacing contradicts.
+            frequency the dates' spacing contradicts; or when neither is
+            given and the dates are spaced like no frequency in the bands —
+            intraday bars, an irregular series, every 20 days — so that
+            ``default`` would be a guess.
     """
     band, spacing = _band_for(index)
     seen = (
@@ -168,6 +180,18 @@ def resolve_periods_per_year(
             else ""
         )
         return band.periods_per_year, note
+    if spacing is not None:
+        # Measured, and like nothing known. Falling back here is what
+        # annualized a fortnightly NAV on 252 without a word.
+        raise FrequencyMismatchError(
+            f"The dates are a median {spacing:.4g} days apart, which matches "
+            f"no frequency the engine knows ({', '.join(b.label for b in _BANDS)}), "
+            "and the config does not set periods_per_year. Annualizing on the "
+            f"default {default} would be a guess, and every annualized "
+            "volatility, return and Sharpe would be off by however wrong it is. "
+            "Set periods_per_year in the config to the number of these periods "
+            "in a year."
+        )
     return default, ""
 
 
