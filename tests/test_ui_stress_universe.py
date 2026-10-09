@@ -242,6 +242,22 @@ def test_a_correlation_shift_outside_zero_to_one_is_refused_in_the_library_s_wor
     assert problems == [f"Too far: {_library_refusal(payload[0])}"]
 
 
+def test_a_matrix_beside_a_correlation_shift_is_refused_in_the_library_s_words():
+    """The page does not judge the pair itself; it repeats the library."""
+    entry = {
+        "name": "Both",
+        "returns": {"A": -0.2},
+        "covariance_scale": {"A": {"A": 0.04, "B": 0.01}, "B": {"A": 0.01, "B": 0.09}},
+        "correlation_shift": 0.5,
+    }
+    message = _library_refusal(entry)
+    assert "replacement covariance" in message
+
+    usable, problems = validated_shock_dicts([entry])
+    assert usable == []
+    assert problems == [f"Both: {message}"]
+
+
 def test_something_that_is_not_a_scenario_is_named_rather_than_dropped():
     """A negative covariance multiple is refused, and the page is told why."""
     rows = pd.DataFrame(

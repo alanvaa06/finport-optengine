@@ -579,6 +579,69 @@ def test_a_correlation_shift_survives_upload_edit_download_and_run(
     solved_app.run()
 
 
+def test_a_matrix_beside_a_correlation_shift_is_refused_in_the_library_s_words(
+    solved_app,
+):
+    """The page does not judge a shift itself; it repeats the library.
+
+    The grid has no cell for a replacement matrix, so the pair can only
+    arrive in a file, and the file is refused whole with the message
+    ``--stress`` would print rather than loaded with one half dropped.
+    """
+    import yaml
+    from components import empty_scenario_table, empty_shock_table
+
+    from optimization_engine.stress import Shock, StressError, load_shocks_yaml
+
+    document = yaml.safe_dump(
+        {
+            "schema_version": 1,
+            "shocks": [
+                {
+                    "name": "Both",
+                    "returns": {"US_Equity": -0.20},
+                    "covariance_scale": {
+                        "US_Equity": {"US_Equity": 0.04, "Intl_Equity": 0.01},
+                        "Intl_Equity": {"US_Equity": 0.01, "Intl_Equity": 0.09},
+                    },
+                    "correlation_shift": 0.5,
+                }
+            ],
+        }
+    )
+    with pytest.raises(StressError) as caught:
+        load_shocks_yaml(document)
+    message = str(caught.value)
+    assert "replacement covariance" in message
+
+    _set_shocks(solved_app, [("Typed by hand", "US_Equity", -0.10)])
+    solved_app.file_uploader(key="stress_upload").set_value(
+        ("both.yaml", document.encode("utf-8"), "text/yaml")
+    ).run()
+    _no_exception(solved_app)
+
+    errors = [e.value for e in solved_app.error]
+    assert f"Could not read those scenarios: {message}" in errors, errors
+    rows = solved_app.session_state["stress_shock_table"]
+    assert list(rows["Scenario"]) == ["Typed by hand"]
+
+    # The grid's own path to a refusal goes through the same door.
+    meta = solved_app.session_state["stress_scenario_table"]
+    meta.loc["Typed by hand", "Correlation shift"] = 1.5
+    solved_app.session_state["stress_scenario_table"] = meta
+    solved_app.run()
+    _no_exception(solved_app)
+    with pytest.raises(StressError) as caught:
+        Shock("Typed by hand", {"US_Equity": -0.10}, correlation_shift=1.5)
+    errors = [e.value for e in solved_app.error]
+    assert f"Not a scenario yet — Typed by hand: {caught.value}" in errors, errors
+
+    solved_app.file_uploader(key="stress_upload").set_value(None).run()
+    solved_app.session_state["stress_shock_table"] = empty_shock_table()
+    solved_app.session_state["stress_scenario_table"] = empty_scenario_table()
+    solved_app.run()
+
+
 def test_the_universe_tab_draws_three_states_not_two(solved_app):
     """The heatmap has to say "nobody evaluated this", or it says nothing."""
     from components import ELIGIBILITY_COLORS, ELIGIBILITY_STATES
