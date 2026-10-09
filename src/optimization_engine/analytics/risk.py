@@ -114,7 +114,10 @@ def var_historic(r: pd.Series | pd.DataFrame, level: float = 5) -> float | pd.Se
 
     Returns:
         A positive number: a VaR of ``0.02`` means "lose 2% or more in the
-        worst 5% of periods". One value per column for a frame.
+        worst 5% of periods". One value per column for a frame. NaN where
+        there is no observation: ``np.percentile`` raises on an empty array,
+        and one never-observed column used to take down a whole
+        ``summary_stats`` table.
 
     Raises:
         TypeError: If ``r`` is neither a Series nor a DataFrame.
@@ -122,7 +125,10 @@ def var_historic(r: pd.Series | pd.DataFrame, level: float = 5) -> float | pd.Se
     if isinstance(r, pd.DataFrame):
         return r.aggregate(var_historic, level=level)
     if isinstance(r, pd.Series):
-        return -np.percentile(r.dropna(), level)
+        observed = r.dropna()
+        if observed.empty:
+            return float("nan")
+        return -np.percentile(observed, level)
     raise TypeError("Expected Series or DataFrame")
 
 
@@ -170,7 +176,9 @@ def cvar_historic(r: pd.Series | pd.DataFrame, level: float = 5) -> float | pd.S
 
     Returns:
         A positive number: the average loss across the periods worse than the
-        VaR threshold. One value per column for a frame.
+        VaR threshold. One value per column for a frame. NaN where there is
+        no observation, as for :func:`var_historic`: no period lies beyond a
+        NaN threshold, and the mean of none is NaN.
 
     Raises:
         TypeError: If ``r`` is neither a Series nor a DataFrame.
@@ -196,12 +204,17 @@ def tail_ratio(r: pd.Series | pd.DataFrame, level: float = 5) -> float | pd.Seri
             the 95th percentile against the 5th.
 
     Returns:
-        A dimensionless ratio. One value per column for a frame.
+        A dimensionless ratio. One value per column for a frame. It reads
+        the periods that were observed — a NaN period is in neither tail, as
+        for :func:`var_historic` — and is NaN where there is none.
     """
     if isinstance(r, pd.DataFrame):
         return r.aggregate(tail_ratio, level=level)
-    right = float(np.percentile(r, 100 - level))
-    left = float(abs(np.percentile(r, level)))
+    observed = r.dropna()
+    if observed.empty:
+        return float("nan")
+    right = float(np.percentile(observed, 100 - level))
+    left = float(abs(np.percentile(observed, level)))
     return right / left if left > 0 else float("nan")
 
 
@@ -220,10 +233,14 @@ def omega_ratio(
 
     Returns:
         A dimensionless ratio, above 1 when the probability-weighted gains
-        exceed the losses. One value per column for a frame.
+        exceed the losses. One value per column for a frame. NaN where there
+        is no observation: both sums are then zero, which used to read as
+        gains with no losses — an infinite ratio.
     """
     if isinstance(r, pd.DataFrame):
         return r.aggregate(omega_ratio, threshold=threshold)
+    if r.count() == 0:
+        return float("nan")
     excess = r - threshold
     gains = float(excess[excess > 0].sum())
     losses = float(-excess[excess < 0].sum())
@@ -368,7 +385,12 @@ def max_drawdown_duration(returns: pd.Series) -> float:
 
     Returns:
         The length in periods, on whatever periodicity ``returns`` carries.
+        0 for a stream that never fell below a peak; NaN for one with no
+        observation, which has no drawdown episode either and used to score
+        0 as well.
     """
+    if returns.count() == 0:
+        return float("nan")
     table = drawdown_table(returns, top=10_000)
     if table.empty:
         return 0.0

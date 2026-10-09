@@ -319,6 +319,14 @@ with what to do about it.
   config shared `risk_budget`, the views, `extra` and `benchmark_weights` with
   the dict it was read from, and `OptimizerSpec.to_dict()` handed out the
   spec's own `extra`.
+- **A column with no observations no longer takes down `summary_stats`.** An
+  all-NaN column raised `IndexError` from `var_historic`, which handed
+  `np.percentile` an empty array, and from `cvar_historic` through it. With
+  `extended=True` the same column showed an infinite Omega ratio and a
+  drawdown duration of 0. Every metric is now NaN for such a column and the
+  other columns are unchanged; `tail_ratio` also skips NaN periods, as
+  `var_historic` does, so a late-listing column gets a tail ratio rather than
+  NaN.
 
 ### Changed
 
