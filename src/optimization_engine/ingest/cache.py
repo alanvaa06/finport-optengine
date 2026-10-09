@@ -84,6 +84,15 @@ _COMPRESSION = zipfile.ZIP_DEFLATED
 _REPLACE_ATTEMPTS = 5
 _REPLACE_BACKOFF_SECONDS = 0.010
 
+#: The reader's side of the same refusal. While ``os.replace`` is publishing
+#: over an entry on Windows, opening that entry raises ``PermissionError``
+#: (``Errno 13``) for the instant the rename holds it, so :meth:`PanelCache.load`
+#: retries the open (linear: 5 ms, 10 ms, ...) instead of reporting an entry
+#: that exists as a miss. On POSIX the open is never refused this way; a
+#: genuinely unreadable entry costs these few waits once, then is a miss.
+_OPEN_ATTEMPTS = 5
+_OPEN_BACKOFF_SECONDS = 0.005
+
 
 @dataclass(frozen=True)
 class CacheEntry:
@@ -168,7 +177,7 @@ class PanelCache:
             return None
 
         try:
-            with zipfile.ZipFile(path) as archive:
+            with _open_entry(path) as archive:
                 manifest = json.loads(archive.read(_MANIFEST).decode("utf-8"))
                 if int(manifest.get("format_version", 0)) != _FORMAT_VERSION:
                     return None
@@ -414,6 +423,22 @@ def _decode_index(manifest: dict) -> pd.DatetimeIndex:
     )
     tz = manifest.get("index_tz")
     return index.tz_localize("UTC").tz_convert(tz) if tz else index
+
+
+def _open_entry(path: Path) -> zipfile.ZipFile:
+    """Open an entry, waiting out a publish that is replacing it right now.
+
+    Only ``PermissionError`` is retried — that is the refusal a concurrent
+    ``os.replace`` causes on Windows. Anything else, and the last refusal,
+    propagates for :meth:`PanelCache.load` to report as a miss. Once open, the
+    handle keeps reading the file it got even if a newer entry lands.
+    """
+    for attempt in range(1, _OPEN_ATTEMPTS):
+        try:
+            return zipfile.ZipFile(path)
+        except PermissionError:
+            time.sleep(_OPEN_BACKOFF_SECONDS * attempt)
+    return zipfile.ZipFile(path)
 
 
 def _identity(path: Path) -> tuple[int, int, int] | None:
