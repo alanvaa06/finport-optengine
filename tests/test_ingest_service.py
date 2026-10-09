@@ -880,6 +880,65 @@ def test_a_publish_that_is_never_permitted_and_lands_nothing_reports_failure(
     assert list(tmp_path.iterdir()) == []
 
 
+def test_a_read_refused_mid_republish_is_retried_rather_than_reported_as_a_miss(
+    tmp_path, monkeypatch
+):
+    """Windows refuses to *open* an entry while ``os.replace`` is publishing over it.
+
+    The reader's side of the refused-publish test above. For the instant the
+    rename holds the target, opening it raises ``PermissionError`` (``Errno
+    13``), and ``load`` used to swallow that as a miss — so a warm entry looked
+    cold to a reader that happened to arrive mid-republish. That is what made
+    the concurrent writer-and-reader test fail on Windows roughly one run in
+    four. POSIX never refuses the open, so the refusal is simulated here.
+    """
+    from optimization_engine.ingest import cache as cache_module
+
+    cache = PanelCache(tmp_path)
+    panel = _panel_for("AAA", volume=True)
+    assert cache.store("samekey", panel) is True
+
+    real_zipfile = cache_module.zipfile.ZipFile
+    attempts = []
+
+    def refuse_the_first_two(file, *args, **kwargs):
+        attempts.append(1)
+        if len(attempts) <= 2:
+            raise PermissionError(13, "Permission denied", str(file))
+        return real_zipfile(file, *args, **kwargs)
+
+    monkeypatch.setattr(cache_module.zipfile, "ZipFile", refuse_the_first_two)
+    loaded = cache.load("samekey")
+    monkeypatch.undo()
+
+    assert loaded is not None, "a refused open is a moment's wait, not a miss"
+    assert len(attempts) == 3
+    pd.testing.assert_frame_equal(loaded[0].prices(), panel.prices())
+
+
+def test_a_read_that_is_never_permitted_is_still_a_miss_not_an_exception(
+    tmp_path, monkeypatch
+):
+    """The retry is bounded: an entry that stays unreadable degrades to a fetch."""
+    from optimization_engine.ingest import cache as cache_module
+
+    cache = PanelCache(tmp_path)
+    assert cache.store("samekey", _panel_for("AAA", volume=True)) is True
+
+    attempts = []
+
+    def always_refuse(file, *args, **kwargs):
+        attempts.append(1)
+        raise PermissionError(13, "Permission denied", str(file))
+
+    monkeypatch.setattr(cache_module.zipfile, "ZipFile", always_refuse)
+    assert cache.load("samekey") is None
+    monkeypatch.undo()
+
+    assert len(attempts) == 5, "five attempts before conceding the entry"
+    assert cache.load("samekey") is not None
+
+
 def test_clear_removes_entries_and_the_directories_version_one_wrote(tmp_path):
     cache = PanelCache(tmp_path)
     cache.store("k1", _panel_for("AAA", volume=True))
