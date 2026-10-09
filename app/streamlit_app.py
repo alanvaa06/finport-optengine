@@ -909,8 +909,12 @@ with st.sidebar:
     turnover_limit: float | None = None
     if use_turnover:
         turnover_limit = st.slider(
-            "Max one-way turnover", 0.01, 2.0, 0.20, 0.01,
-            help="0.20 means at most 20% of the portfolio changes hands.",
+            "Max two-sided turnover", 0.01, 2.0, 0.20, 0.01,
+            help=(
+                "Buys plus sells, Σ|Δw|, against the previous allocation. "
+                "0.20 lets 10% of the book change hands: 10% sold and 10% "
+                "bought."
+            ),
         )
         if not req.supports_turnover:
             st.warning(
@@ -2493,7 +2497,12 @@ with tab_backtest:
                     ),
                     None,
                 ),
-                ("Turnover per year", num(bt.annualized_turnover, 2), "One-way."),
+                (
+                    "Turnover per year",
+                    num(bt.annualized_turnover, 2),
+                    "Two-sided: buys plus sells, as a multiple of the book. "
+                    "The one-way figure desks quote is half of it.",
+                ),
                 ("Total cost", pct(bt.total_cost), None),
                 (
                     "Cost drag",
@@ -2765,7 +2774,11 @@ with tab_backtest:
                         ),
                         None,
                     ),
-                    ("Turnover per year", num(wf.backtest.annualized_turnover, 2), None),
+                    (
+                        "Turnover per year",
+                        num(wf.backtest.annualized_turnover, 2),
+                        "Two-sided: buys plus sells, as a multiple of the book.",
+                    ),
                     (
                         "Failed solves",
                         str(len(wf.failures)),
@@ -3366,7 +3379,8 @@ with tab_performance:
                     (
                         "Turnover / year",
                         num(report.metadata.get("annualized_turnover"), 2),
-                        "One-way.",
+                        "Two-sided: buys plus sells, as a multiple of the "
+                        "book. The one-way figure desks quote is half of it.",
                     ),
                     (
                         "Ulcer index",
@@ -3907,7 +3921,8 @@ with tab_whatif:
                 ).fillna(0.0)
                 delta = weights_df["What-if"] - weights_df["Anchor"]
                 st.caption(
-                    f"One-way turnover versus the anchor: {delta.abs().sum():.2%}"
+                    "Two-sided turnover versus the anchor, buys plus sells: "
+                    f"{delta.abs().sum():.2%}"
                 )
             except Exception:
                 weights_df = pd.DataFrame({"What-if": wf_run.result.weights}).fillna(0.0)

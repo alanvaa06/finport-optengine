@@ -310,7 +310,8 @@ def render_portfolio_diagnostics(diag) -> None:
             (
                 "Turnover vs. previous",
                 pct(diag.turnover),
-                "One-way: the fraction of the book that changes hands.",
+                "Two-sided: buys plus sells, Σ|Δw|. Half of it is the "
+                "fraction of the book that changes hands.",
             )
         )
     metric_row(extra)
@@ -326,9 +327,11 @@ def render_projection_distance(result) -> None:
             (
                 "Moved by constraints",
                 pct(distance),
-                "One-way fraction of the book the mandate shifted away from "
-                "this method's own allocation. Large values mean the "
-                "constraints, not the method, produced the result.",
+                "The fraction of the book the mandate shifted away from "
+                "this method's own allocation, counted one way: ½·Σ|Δw|, "
+                "half what a two-sided turnover figure shows for the same "
+                "move. Large values mean the constraints, not the method, "
+                "produced the result.",
             )
         ]
     )
